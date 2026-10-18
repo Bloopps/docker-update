@@ -1,0 +1,169 @@
+# /etc/docker-update/updates.toml — propriétaire root:root, mode 644 (ou 600).
+# Le script refuse de démarrer si ce fichier appartient à un autre compte ou est modifiable par d'autres :
+# il contient des commandes (pre_hook) exécutées en root.
+#
+# TOUS LES CHEMINS ET NOMS DE SERVICES CI-DESSOUS SONT DES PLACEHOLDERS : l'agent doit les remplacer par
+# les valeurs réelles, relevées en lecture seule (voir AGENT.md, étape 2).
+
+[settings]
+state_file        = "/var/lib/docker-update/state.json"
+lock_file         = "/run/docker-update/lock"
+registry_tool     = "buildx"                         # buildx (manifeste brut) ou regctl (requête HEAD)
+notify_url_file   = "/etc/docker-update/discord_webhook"   # root:root 600, UNE ligne : l'URL du webhook
+notify_format     = "discord"
+heartbeat_url_file = "/etc/docker-update/heartbeat_url"    # optionnel (ex. URL « push » d'Uptime Kuma) ; supprimer si inutilisé
+default_cooldown  = "3d"                             # une image doit rester identique ce temps avant d'être appliquée
+window            = "02:00-05:00"                    # on n'applique que la nuit ; "" = à toute heure
+settle_seconds    = 20                               # attente après démarrage avant de juger l'état
+health_timeout    = 180                              # secondes d'attente de la sonde de santé
+
+# Veille de sécurité : avis publiés par les dépôts GitHub des projets (voir `advisories` par service).
+advisory_poll     = "1h"                             # au plus une requête par dépôt et par heure (limite : 60/h sans jeton)
+advisory_lookback = "30d"                            # on ignore les avis plus anciens
+# github_token_file = "/etc/docker-update/github_token"   # optionnel : jeton SANS aucun droit, seulement pour relever la limite de débit
+# version_label   = "org.opencontainers.image.version"    # étiquette d'image qui porte la version du produit
+
+# ── Services de sécurité : automatiques, délai de 3 jours, nuit seulement, test de fumée après ──
+# `advisories` : si un avis de sécurité (sévérité >= min_severity, défaut « high ») touche la version EN COURS et
+# que l'image candidate (version lue dans ses étiquettes) n'est plus touchée, le délai de 3 jours est ramené à
+# security_cooldown (défaut 6 h, compté depuis la plus tardive de la 1re observation et de la publication de l'avis).
+# Un avis « critical » ignore aussi la fenêtre horaire. Tout cas ambigu = alerte Discord seulement.
+[[service]]
+name         = "traefik"
+advisories   = ["traefik/traefik"]
+compose_dir  = "/home/ubuntu/traefik"
+service      = "traefik"
+mode         = "auto"
+smoke_url    = "https://tirelire.EXEMPLE.fr/"        # sans connexion : redirection vers Pocket ID attendue
+smoke_expect = [302, 401, 403]
+
+[[service]]
+name         = "pocket-id"
+advisories   = ["pocket-id/pocket-id"]
+compose_dir  = "/home/ubuntu/pocket-id"
+service      = "pocket-id"
+mode         = "auto"
+smoke_url    = "https://EXEMPLE.fr/"
+smoke_expect = [200, 302]
+
+[[service]]
+name         = "crowdsec"
+advisories   = ["crowdsecurity/crowdsec"]
+compose_dir  = "/home/ubuntu/traefik"                # même pile que Traefik d'après l'inventaire ; à vérifier
+service      = "crowdsec"
+mode         = "auto"
+# Pendant le redémarrage de CrowdSec, AppSec est injoignable et Traefik bloque (fail-closed) quelques secondes.
+
+# ── Applications peu sensibles : automatiques, délai de 3 jours ──
+[[service]]
+name = "homepage"
+compose_dir = "/home/ubuntu/homepage"
+service = "homepage"
+mode = "auto"
+window = ""                                          # à toute heure
+
+[[service]]
+name = "beszel"
+compose_dir = "/home/ubuntu/beszel"
+service = "beszel"
+mode = "auto"
+window = ""
+
+[[service]]
+name = "goaccess"
+compose_dir = "/home/ubuntu/goaccess"
+service = "goaccess"
+mode = "auto"
+window = ""
+
+# ── La tirelire : un groupe (même image), dans l'ordre migrate -> egress -> web -> admin -> sync ──
+# rollback = false : les migrations de la base ne se défont pas. En cas d'échec, l'outil prévient et NE
+# revient PAS en arrière tout seul (une sauvegarde est faite avant, par le crochet ci-dessous).
+# Le crochet est déclaré UNE SEULE FOIS, sur le premier service du groupe.
+[[service]]
+name          = "tirelire-migrate"
+group         = "tirelire"
+compose_dir   = "/home/ubuntu/tirelire"
+compose_files = ["compose.yml", "compose.traefik.yml"]
+service       = "migrate"
+mode          = "auto"
+cooldown      = "1d"
+window        = ""
+rollback      = false
+pre_hook      = [["/usr/local/sbin/tirelire-predump.sh"]]
+
+[[service]]
+name = "tirelire-egress"
+group = "tirelire"
+compose_dir = "/home/ubuntu/tirelire"
+compose_files = ["compose.yml", "compose.traefik.yml"]
+service = "egress"
+mode = "auto"
+cooldown = "1d"
+window = ""
+rollback = false
+
+[[service]]
+name = "tirelire-web"
+group = "tirelire"
+compose_dir = "/home/ubuntu/tirelire"
+compose_files = ["compose.yml", "compose.traefik.yml"]
+service = "web"
+mode = "auto"
+cooldown = "1d"
+window = ""
+rollback = false
+smoke_url = "https://tirelire.EXEMPLE.fr/"
+smoke_expect = [302, 401, 403]
+
+[[service]]
+name = "tirelire-admin"
+group = "tirelire"
+compose_dir = "/home/ubuntu/tirelire"
+compose_files = ["compose.yml", "compose.traefik.yml"]
+service = "admin"
+mode = "auto"
+cooldown = "1d"
+window = ""
+rollback = false
+
+[[service]]
+name = "tirelire-sync"
+group = "tirelire"
+compose_dir = "/home/ubuntu/tirelire"
+compose_files = ["compose.yml", "compose.traefik.yml"]
+service = "sync"
+mode = "auto"
+cooldown = "1d"
+window = ""
+rollback = false
+
+# ── Services « classe root » ou à changements fréquents : l'outil PRÉVIENT, on met à jour à la main ──
+# `docker-update now <nom> --yes` quand vous avez lu les notes de version.
+[[service]]
+name = "immich"
+advisories   = ["immich-app/immich"]
+compose_dir = "/home/ubuntu/immich"
+service = "immich-server"
+mode = "notify"
+cooldown = "3d"
+
+[[service]]
+name = "portainer"
+advisories   = ["portainer/portainer"]
+compose_dir = "/home/ubuntu/portainer"
+service = "portainer"
+mode = "notify"
+
+[[service]]
+name = "wg-easy"
+advisories   = ["wg-easy/wg-easy"]
+compose_dir = "/home/ubuntu/wg-easy"
+service = "wg-easy"
+mode = "notify"
+
+[[service]]
+name = "portabase"
+compose_dir = "/home/ubuntu/portabase"
+service = "portabase-app"
+mode = "notify"

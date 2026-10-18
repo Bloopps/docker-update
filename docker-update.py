@@ -1,0 +1,1246 @@
+#!/usr/bin/env python3
+"""docker-update : mises à jour d'images pour des piles Docker Compose, avec délai de sécurité.
+
+Principe
+  - Aucun conteneur ne détient le droit de créer d'autres conteneurs : ce script tourne sur l'hôte.
+  - Une image n'est appliquée que si son digest est resté le même pendant `cooldown` (mesuré depuis
+    la première fois que CE script l'a vu, pas depuis une date écrite dans l'image).
+  - On tire exactement le digest évalué (jamais « le tag »), puis on recrée le service avec compose.
+  - Si le service ne repart pas : retour à l'image précédente (sauf `rollback = false`) et alerte.
+
+Fonctions
+  - modes par service : auto (applique après le délai), notify (prévient seulement), manual (ignore) ;
+  - groupes (plusieurs services d'une même image, mis à jour ensemble dans l'ordre du fichier) ;
+  - fenêtre horaire (ex. 02:00-05:00) : on observe tout le temps, on n'applique que dans la fenêtre ;
+  - crochet avant mise à jour (ex. sauvegarde de la base), test de fumée HTTP après ;
+  - retour arrière automatique ou désactivé par service ; pause (hold) ;
+  - notifications Discord (ntfy ou JSON possibles), anti-spam des erreurs répétées ;
+  - signal de vie (heartbeat) pour détecter un arrêt silencieux de l'outil ;
+  - veille de sécurité : lit les avis de sécurité publiés par les dépôts GitHub des projets suivis ; si la
+    version en cours est affectée ET que l'image candidate (version lue dans ses étiquettes) ne l'est plus,
+    le délai est raccourci (`security_cooldown`, 6 h par défaut). Tout cas ambigu devient une ALERTE seule.
+
+Sous-commandes
+  validate          vérifie la configuration et les outils, ne touche à rien
+  check             observe (registre + état + tests de fumée), n'applique RIEN, n'envoie rien
+  run               observe, applique les mises à jour « auto » dont le délai est écoulé, notifie
+  now NOM... --yes  applique tout de suite (sans délai ni fenêtre) les services ou groupes nommés
+  hold NOM...       met en pause (aucune mise à jour automatique) ; unhold NOM... reprend
+  status            affiche l'état mémorisé
+  notify-test       envoie un message de test (vérifie le webhook), ne touche à rien
+
+Bibliothèque standard seulement (Python >= 3.11).
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from typing import Callable
+
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+MODES = ("auto", "notify", "manual")
+REGISTRY_TOOLS = ("buildx", "regctl")
+NOTIFY_FORMATS = ("discord", "ntfy", "json")
+UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+DISCORD_MAX = 1900
+MAX_MANIFEST = 4 << 20
+SEVERITIES = ("low", "medium", "high", "critical")
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+GHSA_RE = re.compile(r"^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$")
+POLICIES = ("fast", "alert")
+FLOATING_TAGS = {"latest", "main", "master", "dev", "edge", "nightly", "stable"}
+
+
+class ConfigError(Exception):
+    pass
+
+
+class UpdateError(Exception):
+    pass
+
+
+# ── Durées, références d'image ──────────────────────────────────────────────
+
+def parse_duration(value) -> int:
+    s = str(value).strip()
+    if s == "0":
+        return 0
+    m = re.fullmatch(r"(\d+)([smhdw])", s)
+    if not m:
+        raise ConfigError(f"durée invalide : {value!r} (exemples : 30m, 6h, 3d, 1w, 0)")
+    return int(m[1]) * UNITS[m[2]]
+
+
+def fmt_duration(sec: int) -> str:
+    for unit, n in (("j", 86400), ("h", 3600), ("min", 60)):
+        if sec >= n:
+            return f"{sec // n} {unit}"
+    return f"{sec} s"
+
+
+def parse_window(spec) -> tuple[int, int] | None:
+    """« 02:00-05:00 » -> (120, 300) en minutes depuis minuit ; vide -> None (toujours)."""
+    s = str(spec).strip()
+    if not s:
+        return None
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})", s)
+    if not m:
+        raise ConfigError(f"fenêtre invalide : {spec!r} (exemple : 02:00-05:00)")
+    h1, m1, h2, m2 = (int(x) for x in m.groups())
+    if h1 > 23 or h2 > 23 or m1 > 59 or m2 > 59:
+        raise ConfigError(f"fenêtre invalide : {spec!r}")
+    a, b = h1 * 60 + m1, h2 * 60 + m2
+    if a == b:
+        raise ConfigError(f"fenêtre vide : {spec!r}")
+    return a, b
+
+
+def in_window(w: tuple[int, int] | None, minutes: int) -> bool:
+    if w is None:
+        return True
+    a, b = w
+    return a <= minutes < b if a < b else (minutes >= a or minutes < b)
+
+
+def clean_text(value, limit: int = 200) -> str:
+    """Texte venu de l'extérieur : sans caractères de contrôle, sur une ligne, borné."""
+    s = "".join(c if c.isprintable() else " " for c in str(value or ""))
+    return " ".join(s.split())[:limit]
+
+
+_VER = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:([-+])([0-9A-Za-z.-]+))?$")
+_BOUND = re.compile(r"^(>=|<=|>|<|=)?\s*v?(\d+)\.(\d+)(?:\.(\d+))?(?:([-+])([0-9A-Za-z.-]+))?$")
+
+
+def parse_version(value) -> tuple[int, int, int, int] | None:
+    """« v3.6.3 » -> (3, 6, 3, 1). Le dernier élément vaut 0 pour une préversion (donc plus petite)."""
+    m = _VER.match(str(value or "").strip())
+    if not m:
+        return None
+    return int(m[1]), int(m[2]), int(m[3]), 0 if m[4] == "-" else 1
+
+
+def in_range(version, rng: str) -> bool:
+    """La version est-elle dans une plage d'avis GitHub (« >= 3.0.0, < 3.6.3 », contraintes liées par ET) ?
+    Lève ValueError si la version ou la plage sont illisibles : on ne devine jamais."""
+    v = parse_version(version)
+    if v is None:
+        raise ValueError(f"version illisible : {version!r}")
+    parts = [p.strip() for p in str(rng).split(",") if p.strip()]
+    if not parts:
+        raise ValueError("plage vide")
+    for p in parts:
+        m = _BOUND.match(p)
+        if not m:
+            raise ValueError(f"contrainte illisible : {p!r}")
+        bound = (int(m[2]), int(m[3]), int(m[4] or 0), 0 if m[5] == "-" else 1)
+        op = m[1] or "="
+        ok = {">=": v >= bound, ">": v > bound, "<=": v <= bound, "<": v < bound, "=": v == bound}[op]
+        if not ok:
+            return False
+    return True
+
+
+def sev_rank(s: str) -> int:
+    s = (s or "").lower()
+    return SEVERITIES.index(s) if s in SEVERITIES else 1  # sévérité inconnue : traitée comme « moyenne »
+
+
+def compact_advisory(a) -> dict | None:
+    """Réduit un avis GitHub aux champs utiles ; None si inutilisable."""
+    if not isinstance(a, dict):
+        return None
+    ghsa = str(a.get("ghsa_id") or "")
+    if not GHSA_RE.match(ghsa):
+        return None
+    try:
+        pub = int(datetime.datetime.fromisoformat(str(a.get("published_at")).replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+    ranges = []
+    for v in a.get("vulnerabilities") or []:
+        if isinstance(v, dict) and isinstance(v.get("vulnerable_version_range"), str) and v["vulnerable_version_range"].strip():
+            ranges.append(v["vulnerable_version_range"].strip())
+    cve = str(a.get("cve_id") or "")
+    return {"id": ghsa, "cve": cve if re.match(r"^CVE-\d{4}-\d{4,}$", cve) else "",
+            "sev": str(a.get("severity") or "").lower(), "pub": pub, "ranges": ranges,
+            "summary": clean_text(a.get("summary")), "withdrawn": bool(a.get("withdrawn_at"))}
+
+
+def split_ref(ref: str) -> tuple[str, str, str | None]:
+    """(dépôt, étiquette, digest épinglé ou None). 'traefik:v3.6' -> ('traefik', 'v3.6', None)."""
+    digest = None
+    if "@" in ref:
+        ref, digest = ref.split("@", 1)
+    last = ref.rsplit("/", 1)[-1]
+    if ":" in last:
+        repo, tag = ref.rsplit(":", 1)
+    else:
+        repo, tag = ref, "latest"
+    return repo, tag, digest
+
+
+# ── Configuration ───────────────────────────────────────────────────────────
+
+@dataclass
+class Settings:
+    state_file: str = "/var/lib/docker-update/state.json"
+    lock_file: str = "/run/docker-update.lock"
+    registry_tool: str = "buildx"
+    notify_url_file: str = ""
+    notify_format: str = "discord"
+    default_cooldown: int = 3 * 86400
+    settle_seconds: int = 15
+    health_timeout: int = 180
+    window: str = ""
+    heartbeat_url_file: str = ""
+    github_api: str = "https://api.github.com"
+    github_token_file: str = ""
+    advisory_poll: int = 3600
+    advisory_lookback: int = 30 * 86400
+    version_label: str = "org.opencontainers.image.version"
+
+
+@dataclass
+class Service:
+    name: str
+    compose_dir: str
+    service: str
+    compose_files: list[str]
+    mode: str
+    cooldown: int
+    group: str
+    rollback: bool
+    health_timeout: int
+    pre_hook: list[list[str]]
+    window: tuple[int, int] | None = None
+    smoke_url: str = ""
+    smoke_expect: list[int] = field(default_factory=list)
+    advisories: list[str] = field(default_factory=list)
+    min_severity: str = "high"
+    security_cooldown: int = 6 * 3600
+    security_policy: str = "fast"
+
+    @property
+    def unit(self) -> str:
+        return self.group or self.name
+
+
+@dataclass
+class Config:
+    settings: Settings
+    services: list[Service]
+
+
+_SETTINGS_KEYS = {"state_file", "lock_file", "registry_tool", "notify_url_file", "notify_format",
+                  "default_cooldown", "settle_seconds", "health_timeout", "window", "heartbeat_url_file",
+                  "github_api", "github_token_file", "advisory_poll", "advisory_lookback", "version_label"}
+_SERVICE_KEYS = {"name", "compose_dir", "service", "compose_files", "mode", "cooldown", "group",
+                 "rollback", "health_timeout", "pre_hook", "window", "smoke_url", "smoke_expect",
+                 "advisories", "min_severity", "security_cooldown", "security_policy"}
+
+
+def _check_keys(where: str, data: dict, allowed: set[str]) -> None:
+    unknown = set(data) - allowed
+    if unknown:
+        raise ConfigError(f"{where} : clé(s) inconnue(s) {sorted(unknown)} (faute de frappe ?)")
+
+
+def parse_config(data: dict) -> Config:
+    raw = dict(data.get("settings", {}))
+    _check_keys("[settings]", raw, _SETTINGS_KEYS)
+    st = Settings()
+    for k in ("state_file", "lock_file", "notify_url_file", "heartbeat_url_file", "window",
+              "github_api", "github_token_file", "version_label"):
+        if k in raw:
+            setattr(st, k, str(raw[k]))
+    if "registry_tool" in raw:
+        st.registry_tool = str(raw["registry_tool"])
+    if st.registry_tool not in REGISTRY_TOOLS:
+        raise ConfigError(f"registry_tool doit valoir {REGISTRY_TOOLS}")
+    if "notify_format" in raw:
+        st.notify_format = str(raw["notify_format"])
+    if st.notify_format not in NOTIFY_FORMATS:
+        raise ConfigError(f"notify_format doit valoir {NOTIFY_FORMATS}")
+    parse_window(st.window)
+    if not re.match(r"^https?://[^/\s]+$", st.github_api):
+        raise ConfigError("github_api doit être une adresse http(s) sans chemin (ex. https://api.github.com)")
+    if "advisory_poll" in raw:
+        st.advisory_poll = parse_duration(raw["advisory_poll"])
+        if st.advisory_poll < 300:
+            raise ConfigError("advisory_poll : 5 minutes au minimum (la limite de GitHub est de 60 requêtes/h sans jeton)")
+    if "advisory_lookback" in raw:
+        st.advisory_lookback = parse_duration(raw["advisory_lookback"])
+    if "default_cooldown" in raw:
+        st.default_cooldown = parse_duration(raw["default_cooldown"])
+    for k in ("settle_seconds", "health_timeout"):
+        if k in raw:
+            v = raw[k]
+            if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+                raise ConfigError(f"{k} doit être un entier >= 0")
+            setattr(st, k, v)
+
+    services: list[Service] = []
+    seen: set[str] = set()
+    for i, s in enumerate(data.get("service", []), 1):
+        where = f"[[service]] n°{i}"
+        _check_keys(where, s, _SERVICE_KEYS)
+        for req in ("name", "compose_dir", "service"):
+            if req not in s:
+                raise ConfigError(f"{where} : « {req} » est obligatoire")
+        name = str(s["name"])
+        if not NAME_RE.match(name):
+            raise ConfigError(f"{where} : nom invalide {name!r}")
+        if name in seen:
+            raise ConfigError(f"{where} : nom en double {name!r}")
+        seen.add(name)
+        cdir = str(s["compose_dir"])
+        if not os.path.isabs(cdir):
+            raise ConfigError(f"{name} : compose_dir doit être un chemin absolu")
+        svc_name = str(s["service"])
+        if not NAME_RE.match(svc_name):
+            raise ConfigError(f"{name} : nom de service compose invalide {svc_name!r}")
+        files = s.get("compose_files", [])
+        if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
+            raise ConfigError(f"{name} : compose_files doit être une liste de chaînes")
+        files = [f if os.path.isabs(f) else os.path.join(cdir, f) for f in files]
+        mode = str(s.get("mode", "notify"))
+        if mode not in MODES:
+            raise ConfigError(f"{name} : mode doit valoir {MODES}")
+        group = str(s.get("group", ""))
+        if group and not NAME_RE.match(group):
+            raise ConfigError(f"{name} : nom de groupe invalide {group!r}")
+        hooks = s.get("pre_hook", [])
+        if not isinstance(hooks, list) or not all(
+                isinstance(h, list) and h and all(isinstance(a, str) for a in h) for h in hooks):
+            raise ConfigError(f"{name} : pre_hook doit être une liste de commandes (listes de chaînes)")
+        for h in hooks:
+            if not os.path.isabs(h[0]):
+                raise ConfigError(f"{name} : pre_hook doit appeler un programme par chemin absolu")
+        ht = s.get("health_timeout", st.health_timeout)
+        if not isinstance(ht, int) or isinstance(ht, bool) or ht < 1:
+            raise ConfigError(f"{name} : health_timeout doit être un entier >= 1")
+        smoke_url = str(s.get("smoke_url", ""))
+        smoke_expect = s.get("smoke_expect", [])
+        if smoke_url:
+            if not re.match(r"^https?://", smoke_url):
+                raise ConfigError(f"{name} : smoke_url doit commencer par http:// ou https://")
+            if not (isinstance(smoke_expect, list) and smoke_expect and all(
+                    isinstance(c, int) and not isinstance(c, bool) and 100 <= c <= 599 for c in smoke_expect)):
+                raise ConfigError(f"{name} : smoke_expect doit lister les codes HTTP acceptés (ex. [302, 401])")
+        elif smoke_expect:
+            raise ConfigError(f"{name} : smoke_expect sans smoke_url")
+        advisories = s.get("advisories", [])
+        if not isinstance(advisories, list) or not all(isinstance(r, str) and REPO_RE.match(r) for r in advisories):
+            raise ConfigError(f"{name} : advisories doit être une liste de « propriétaire/dépôt » GitHub")
+        min_sev = str(s.get("min_severity", "high")).lower()
+        if min_sev not in SEVERITIES:
+            raise ConfigError(f"{name} : min_severity doit valoir {SEVERITIES}")
+        policy = str(s.get("security_policy", "fast"))
+        if policy not in POLICIES:
+            raise ConfigError(f"{name} : security_policy doit valoir {POLICIES}")
+        services.append(Service(
+            name=name, compose_dir=cdir, service=svc_name, compose_files=files, mode=mode,
+            cooldown=parse_duration(s["cooldown"]) if "cooldown" in s else st.default_cooldown,
+            group=group, rollback=bool(s.get("rollback", True)), health_timeout=ht, pre_hook=hooks,
+            window=parse_window(s["window"] if "window" in s else st.window),
+            smoke_url=smoke_url, smoke_expect=list(smoke_expect), advisories=list(advisories),
+            min_severity=min_sev, security_policy=policy,
+            security_cooldown=parse_duration(s["security_cooldown"]) if "security_cooldown" in s else 6 * 3600))
+
+    groups: dict[str, list[Service]] = {}
+    for sv in services:
+        if sv.group:
+            groups.setdefault(sv.group, []).append(sv)
+    for g, members in groups.items():
+        if len({(m.mode, m.cooldown, m.rollback, m.window, tuple(m.advisories), m.min_severity,
+                 m.security_cooldown, m.security_policy) for m in members}) > 1:
+            raise ConfigError(f"groupe {g} : mode, cooldown, rollback, window et réglages de sécurité doivent être identiques")
+        if g in seen:
+            raise ConfigError(f"groupe {g} : même nom qu'un service")
+    return Config(st, services)
+
+
+def load_config(path: str) -> Config:
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        raise ConfigError(f"configuration introuvable : {path}")
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"configuration illisible : {e}")
+    return parse_config(data)
+
+
+def check_trusted_file(path: str) -> None:
+    """Quand on tourne en root, la configuration (qui contient des commandes) doit appartenir à root
+    et ne pas être modifiable par un autre compte."""
+    if os.geteuid() != 0:
+        return
+    st = os.stat(path)
+    if st.st_uid != 0 or st.st_mode & 0o022:
+        raise ConfigError(f"{path} doit appartenir à root et ne pas être modifiable par le groupe ou les autres "
+                          f"(chown root:root, chmod 644 ou 600)")
+
+
+# ── Exécution de commandes ──────────────────────────────────────────────────
+
+@dataclass
+class Result:
+    rc: int
+    out: str = ""
+    err: str = ""
+
+
+class Runner:
+    """Lance des commandes sans shell. En simulation, les commandes « mutating » ne sont qu'affichées."""
+
+    def __init__(self, dry_run: bool = False, log: Callable[[str], None] = print):
+        self.dry_run = dry_run
+        self.log = log
+
+    def run(self, argv: list[str], mutating: bool = False, timeout: int = 900) -> Result:
+        if mutating and self.dry_run:
+            self.log("[simulation] " + shlex.join(argv))
+            return Result(0)
+        try:
+            p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return Result(124, "", f"délai dépassé ({timeout} s)")
+        except FileNotFoundError:
+            return Result(127, "", f"commande introuvable : {argv[0]}")
+        return Result(p.returncode, p.stdout, p.stderr)
+
+    def run_bytes(self, argv: list[str], timeout: int = 60) -> tuple[int, bytes, str]:
+        """Comme run, mais la sortie reste en octets : indispensable pour hacher un manifeste."""
+        try:
+            p = subprocess.run(argv, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return 124, b"", f"délai dépassé ({timeout} s)"
+        except FileNotFoundError:
+            return 127, b"", f"commande introuvable : {argv[0]}"
+        return p.returncode, p.stdout, p.stderr.decode("utf-8", "replace")
+
+
+# ── État mémorisé ───────────────────────────────────────────────────────────
+
+class State:
+    """images : ref -> {digest, first_seen, notified, failed} ; holds : noms en pause ;
+    errors : dernière erreur connue par service (anti-spam). Écriture atomique."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.data: dict = {"images": {}, "holds": [], "errors": {}, "advisories": {}, "alerts": {}}
+        try:
+            with open(path, encoding="utf-8") as f:
+                loaded = json.load(f)
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError):
+            raise UpdateError(f"état illisible : {path} (le déplacer pour repartir de zéro)")
+        if not isinstance(loaded, dict):
+            raise UpdateError(f"état invalide : {path}")
+        for k, default in (("images", {}), ("holds", []), ("errors", {}), ("advisories", {}), ("alerts", {})):
+            v = loaded.get(k, default)
+            if not isinstance(v, type(default)):
+                raise UpdateError(f"état invalide ({k}) : {path}")
+            self.data[k] = v
+
+    @property
+    def images(self) -> dict:
+        return self.data["images"]
+
+    def get(self, ref: str) -> dict | None:
+        return self.images.get(ref)
+
+    def put(self, ref: str, rec: dict) -> None:
+        self.images[ref] = rec
+
+    def drop(self, ref: str) -> None:
+        self.images.pop(ref, None)
+
+    def save(self) -> None:
+        d = os.path.dirname(self.path) or "."
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".state-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, indent=1, sort_keys=True)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+
+# ── Notifications ───────────────────────────────────────────────────────────
+
+class Notifier:
+    """Envoie un message court. L'URL (secret) est lue dans un fichier et n'est jamais journalisée."""
+
+    def __init__(self, url_file: str, fmt: str, log: Callable[[str], None] = print,
+                 post: Callable[[str, bytes, dict], None] | None = None, dry_run: bool = False):
+        self.url_file, self.fmt, self.log, self.dry_run = url_file, fmt, log, dry_run
+        self._post = post or self._http_post
+
+    @staticmethod
+    def _http_post(url: str, data: bytes, headers: dict) -> None:
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            r.read()
+
+    def _url(self) -> str:
+        if not self.url_file:
+            return ""
+        try:
+            with open(self.url_file, encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError:
+            return ""
+
+    def send(self, title: str, text: str, level: str = "info") -> None:
+        if self.dry_run:
+            self.log(f"[simulation] notification : {title}")
+            return
+        url = self._url()
+        if not url:
+            return
+        icon = {"info": "ℹ️", "ok": "✅", "warn": "⚠️", "error": "🚨"}.get(level, "")
+        headers = {"User-Agent": "docker-update/1.0"}
+        if self.fmt == "discord":
+            content = f"{icon} **{title}**\n{text}"[:DISCORD_MAX]
+            body = json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode()
+            headers["Content-Type"] = "application/json"
+        elif self.fmt == "ntfy":
+            body = text.encode()
+            headers["Title"] = title.encode("ascii", "replace").decode()
+            headers["Priority"] = "high" if level == "error" else "default"
+        else:
+            body = json.dumps({"title": title, "text": text, "level": level}).encode()
+            headers["Content-Type"] = "application/json"
+        try:
+            self._post(url, body, headers)
+        except (urllib.error.URLError, OSError) as e:
+            # jamais l'URL dans le journal
+            self.log(f"notification non envoyée ({type(e).__name__})")
+
+
+def github_get(url: str, token: str = "", etag: str = "") -> tuple[int, object, str]:
+    """GET JSON sur l'API GitHub. Retourne (code HTTP, contenu, ETag) ; code 0 si le réseau échoue.
+    Le jeton éventuel ne sert qu'à relever la limite de requêtes ; il n'est jamais journalisé."""
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+               "User-Agent": "docker-update/1.0"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    if etag:
+        headers["If-None-Match"] = etag
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=15) as r:
+            return r.status, json.loads(r.read(2 << 20)), r.headers.get("ETag", "")
+    except urllib.error.HTTPError as e:
+        return e.code, None, (e.headers.get("ETag", "") if e.headers else "")
+    except (urllib.error.URLError, OSError, ValueError):
+        return 0, None, ""
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+def http_status(url: str, timeout: int = 10) -> int:
+    """Code HTTP d'un GET sans suivre les redirections ; 0 si la connexion échoue."""
+    opener = urllib.request.build_opener(_NoRedirect)
+    req = urllib.request.Request(url, headers={"User-Agent": "docker-update/1.0"})
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except (urllib.error.URLError, OSError, ValueError):
+        return 0
+
+
+def local_minutes() -> int:
+    t = time.localtime()
+    return t.tm_hour * 60 + t.tm_min
+
+
+# ── Cœur ────────────────────────────────────────────────────────────────────
+
+@dataclass
+class Eval:
+    svc: Service
+    status: str  # uptodate | pending | skipped | error
+    detail: str = ""
+    ref: str = ""
+    remote: str = ""
+    old_image_id: str = ""
+    first_seen: int = 0
+    eligible: bool = False
+    failed_before: bool = False
+    fast: bool = False          # raccourci par un avis de sécurité confirmé
+    urgent: bool = False        # avis critique : ignore aussi la fenêtre horaire
+    sec_ids: list[str] = field(default_factory=list)
+    sec_version: str = ""
+    adv_pub: int = 0            # publication (epoch) de l'avis le plus récent qui justifie l'accélération
+
+
+class Updater:
+    def __init__(self, cfg: Config, runner: Runner, notifier: Notifier, state: State,
+                 now: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
+                 log: Callable[[str], None] = print, http: Callable[[str], int] = http_status,
+                 minutes: Callable[[], int] = local_minutes, persist: bool = True,
+                 gh_get: Callable[[str, str, str], tuple[int, object, str]] = github_get):
+        self.cfg, self.run, self.notifier, self.state = cfg, runner, notifier, state
+        self.now, self.sleep, self.log = now, sleep, log
+        self.http, self.minutes, self.persist = http, minutes, persist
+        self.gh_get = gh_get
+        self.alerts_on = False
+
+    def held(self, svc: Service) -> bool:
+        holds = self.state.data["holds"]
+        return svc.name in holds or (bool(svc.group) and svc.group in holds)
+
+    def smoke(self, svc: Service) -> bool:
+        if not svc.smoke_url:
+            return True
+        for attempt in range(3):
+            if self.http(svc.smoke_url) in svc.smoke_expect:
+                return True
+            if attempt < 2:
+                self.sleep(5)
+        return False
+
+    def save_state(self) -> None:
+        if self.persist:
+            self.state.save()
+
+    # -- docker helpers ------------------------------------------------------
+
+    def _base(self, svc: Service) -> list[str]:
+        argv = ["docker", "compose", "--project-directory", svc.compose_dir]
+        for f in svc.compose_files:
+            argv += ["-f", f]
+        return argv
+
+    def container_id(self, svc: Service) -> str:
+        r = self.run.run(self._base(svc) + ["ps", "-q", "--all", svc.service])
+        if r.rc != 0:
+            raise UpdateError(f"compose ps a échoué : {r.err.strip()[:200]}")
+        lines = [x for x in r.out.split() if x]
+        return lines[0] if lines else ""
+
+    def image_ref(self, svc: Service) -> str:
+        r = self.run.run(self._base(svc) + ["config", "--format", "json"])
+        if r.rc != 0:
+            raise UpdateError(f"compose config a échoué : {r.err.strip()[:200]}")
+        try:
+            image = json.loads(r.out)["services"][svc.service]["image"]
+        except (KeyError, ValueError, TypeError):
+            raise UpdateError(f"service {svc.service} introuvable ou sans « image: » dans le compose")
+        return str(image)
+
+    def remote_digest(self, ref: str) -> str:
+        """Digest de niveau supérieur de l'étiquette (celui qu'enregistre `docker pull`).
+
+        buildx : on lit le manifeste brut (`--raw`, sans télécharger les attestations) et on le hache ;
+        c'est exactement le digest que le registre annonce. regctl : `regctl image digest` (requête HEAD)."""
+        repo, tag, _ = split_ref(ref)
+        full = f"{repo}:{tag}"
+        if self.cfg.settings.registry_tool == "buildx":
+            rc, raw, err = self.run.run_bytes(["docker", "buildx", "imagetools", "inspect", full, "--raw"], timeout=60)
+            if rc != 0 or not raw.lstrip().startswith(b"{") or len(raw) > MAX_MANIFEST:
+                raise UpdateError(f"manifeste distant illisible pour {full} ({err.strip()[:150] or 'sortie inattendue'})")
+            return "sha256:" + hashlib.sha256(raw).hexdigest()
+        r = self.run.run(["regctl", "image", "digest", full], timeout=60)
+        out = r.out.strip()
+        if r.rc != 0 or not DIGEST_RE.match(out):
+            raise UpdateError(f"digest distant introuvable pour {full} ({r.err.strip()[:150] or 'sortie inattendue'})")
+        return out
+
+    def local_state(self, cid: str) -> tuple[str, list[str]]:
+        r = self.run.run(["docker", "inspect", "--format", "{{.Image}}", cid])
+        image_id = r.out.strip()
+        if r.rc != 0 or not image_id:
+            raise UpdateError("docker inspect du conteneur a échoué")
+        r = self.run.run(["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image_id])
+        try:
+            digests = json.loads(r.out) or []
+        except ValueError:
+            digests = []
+        return image_id, [d.split("@", 1)[1] for d in digests if "@" in d]
+
+    # -- évaluation ----------------------------------------------------------
+
+    def evaluate(self, svc: Service) -> Eval:
+        try:
+            if self.held(svc):
+                return Eval(svc, "skipped", "en pause (hold)")
+            cid = self.container_id(svc)
+            if not cid:
+                return Eval(svc, "skipped", "conteneur absent")
+            ref = self.image_ref(svc)
+            repo, tag, pinned = split_ref(ref)
+            if pinned:
+                return Eval(svc, "skipped", "image épinglée par digest dans le compose (gérée à la main)", ref=ref)
+            if tag in FLOATING_TAGS and svc.mode == "auto":
+                self.log(f"  avertissement : {svc.name} suit l'étiquette flottante « {tag} » ; "
+                         f"préférez une étiquette de version mineure")
+            remote = self.remote_digest(ref)
+            image_id, local = self.local_state(cid)
+            if not local:
+                return Eval(svc, "skipped", "image locale sans digest (construite ici ?)", ref=ref)
+            if remote in local:
+                return Eval(svc, "uptodate", ref=ref, remote=remote, old_image_id=image_id)
+            now = int(self.now())
+            rec = self.state.get(ref)
+            if not rec or rec.get("digest") != remote:
+                rec = {"digest": remote, "first_seen": now, "notified": False, "failed": False}
+                self.state.put(ref, rec)
+            first = int(rec["first_seen"])
+            return Eval(svc, "pending", ref=ref, remote=remote, old_image_id=image_id, first_seen=first,
+                        eligible=(now - first) >= svc.cooldown, failed_before=bool(rec.get("failed")))
+        except UpdateError as e:
+            return Eval(svc, "error", str(e))
+
+    def describe(self, e: Eval) -> str:
+        n = e.svc.name
+        if e.status == "uptodate":
+            return f"{n}: à jour"
+        if e.status in ("skipped", "error"):
+            return f"{n}: {'ERREUR' if e.status == 'error' else 'ignoré'} — {e.detail}"
+        age = int(self.now()) - e.first_seen
+        if e.failed_before:
+            return f"{n}: nouvelle image {e.remote[7:19]} déjà tentée sans succès — attend une autre version ou `now`"
+        sec = f" [CORRECTIF DE SÉCURITÉ {', '.join(e.sec_ids)} → {e.sec_version}]" if e.fast else ""
+        if e.eligible:
+            return f"{n}: nouvelle image {e.remote[7:19]} prête (vue depuis {fmt_duration(age)}), mode {e.svc.mode}{sec}"
+        if e.fast:
+            left = max(0, self._ready_at(e) - int(self.now()))
+            return f"{n}: nouvelle image {e.remote[7:19]} différée{sec} — encore {fmt_duration(left)} (délai de sécurité)"
+        left = e.svc.cooldown - age
+        return f"{n}: nouvelle image {e.remote[7:19]} différée — encore {fmt_duration(left)} sur {fmt_duration(e.svc.cooldown)}"
+
+    def _cleanup_state(self, evals: list[Eval]) -> None:
+        pending_refs = {e.ref for e in evals if e.status == "pending"}
+        error_refs = {e.ref for e in evals if e.status in ("error", "skipped") and e.ref}
+        for ref in list(self.state.images):
+            if ref not in pending_refs and ref not in error_refs:
+                self.state.drop(ref)
+
+    # -- veille de sécurité --------------------------------------------------
+
+    def _token(self) -> str:
+        f = self.cfg.settings.github_token_file
+        if not f:
+            return ""
+        try:
+            with open(f, encoding="utf-8") as fh:
+                return fh.read().strip()
+        except OSError:
+            return ""
+
+    def advisories(self, repo: str) -> list[dict]:
+        """Avis publiés par le dépôt, en cache (ETag) : au plus une requête par `advisory_poll`."""
+        st = self.cfg.settings
+        cache = self.state.data["advisories"]
+        rec = cache.get(repo) or {}
+        now = int(self.now())
+        if rec.get("ok") and now - int(rec.get("fetched", 0)) < st.advisory_poll:
+            return rec.get("items", [])
+        url = f"{st.github_api}/repos/{repo}/security-advisories?per_page=50"
+        code, body, etag = self.gh_get(url, self._token(), rec.get("etag", ""))
+        if code == 304 and rec.get("ok"):
+            rec["fetched"] = now
+        elif code == 200 and isinstance(body, list):
+            items = [c for c in (compact_advisory(a) for a in body) if c]
+            rec = {"ok": True, "fetched": now, "etag": etag, "items": items}
+        else:
+            # échec (réseau, limite de débit, dépôt sans avis publics) : on garde l'ancien contenu, on réessaie plus tard
+            if not rec.get("err"):
+                self.log(f"  veille de sécurité : {repo} injoignable (HTTP {code}) ; réessai plus tard")
+            rec = dict(rec, fetched=now, err=code)
+            if not rec.get("ok"):
+                rec["items"] = []
+        cache[repo] = rec
+        return rec.get("items", [])
+
+    def _labels(self, target: str) -> dict:
+        r = self.run.run(["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", target])
+        try:
+            labels = json.loads(r.out) if r.rc == 0 else {}
+        except ValueError:
+            labels = {}
+        return labels if isinstance(labels, dict) else {}
+
+    def _version_of(self, target: str) -> str:
+        labels = self._labels(target)
+        for key in (self.cfg.settings.version_label, "org.label-schema.version"):
+            v = str(labels.get(key) or "")
+            if parse_version(v):
+                return v.lstrip("v")
+        return ""
+
+    def _affects(self, a: dict, version: str) -> bool | None:
+        """True/False, ou None si on ne peut pas conclure (plage illisible)."""
+        if not a["ranges"]:
+            return None
+        verdict: bool | None = False
+        for rng in a["ranges"]:
+            try:
+                if in_range(version, rng):
+                    return True
+            except ValueError:
+                verdict = None
+        return verdict
+
+    def _ready_at(self, e: Eval) -> int:
+        """Un correctif de sécurité attend `security_cooldown` après la plus tardive de deux dates : première
+        observation de l'image et publication de l'avis. Un avis tout neuf ne déclenche donc rien d'instantané."""
+        return max(e.first_seen, e.adv_pub) + e.svc.security_cooldown
+
+    def alert(self, key: str, title: str, text: str, level: str = "warn") -> None:
+        self.log(f"  ALERTE sécurité : {title} — {text}")
+        if not self.alerts_on:
+            return
+        alerts = self.state.data["alerts"]
+        if key in alerts:
+            return
+        alerts[key] = int(self.now())
+        self.notifier.send(title, text, level)
+
+    def security_pass(self, evals: list[Eval], allow_pull: bool) -> None:
+        now = int(self.now())
+        lookback = self.cfg.settings.advisory_lookback
+        for e in evals:
+            svc = e.svc
+            if not svc.advisories or e.status not in ("pending", "uptodate") or not e.old_image_id:
+                continue
+            items: list[dict] = []
+            for repo in svc.advisories:
+                items += self.advisories(repo)
+            recent = [a for a in items if not a["withdrawn"] and now - a["pub"] <= lookback
+                      and sev_rank(a["sev"]) >= sev_rank(svc.min_severity)]
+            if not recent:
+                continue
+            current = self._version_of(e.old_image_id)
+            if not current:
+                a = recent[0]
+                self.alert(f"inconnue:{svc.name}:{a['id']}", f"Avis de sécurité récent : {svc.name}",
+                           f"{a['id']} ({a['sev'] or 'sévérité ?'}) {a['summary']}. Impossible de savoir si la version en cours "
+                           f"est touchée (étiquette de version absente de l'image). Vérifiez à la main.")
+                continue
+            affecting = [a for a in recent if self._affects(a, current)]
+            unsure = [a for a in recent if self._affects(a, current) is None]
+            for a in unsure:
+                self.alert(f"plage:{svc.name}:{a['id']}", f"Avis de sécurité à vérifier : {svc.name}",
+                           f"{a['id']} {a['summary']} — plage de versions illisible, à comparer à la version {current}.")
+            if not affecting:
+                continue
+            names = ", ".join(f"{a['id']}{' / ' + a['cve'] if a['cve'] else ''} ({a['sev'] or '?'})" for a in affecting)
+            if e.status == "uptodate":
+                self.alert(f"sans-correctif:{svc.name}:{current}:{affecting[0]['id']}", f"VULNÉRABLE : {svc.name} {current}",
+                           f"{names}. L'étiquette suivie ne propose pas encore d'image corrigée. "
+                           f"Surveillez la publication d'une version corrigée.", "error")
+                continue
+            if not allow_pull:
+                self.log(f"  {svc.name}: la version en cours ({current}) est touchée par {names} ; "
+                         f"l'image candidate sera évaluée au prochain passage `run`")
+                continue
+            candidate = self._candidate_version(e)
+            if not candidate:
+                self.alert(f"candidate-inconnue:{svc.name}:{e.remote}:{affecting[0]['id']}",
+                           f"Avis de sécurité : {svc.name} {current} touché",
+                           f"{names}. Une nouvelle image existe mais sa version n'est pas lisible : je NE l'accélère PAS. "
+                           f"À vous de juger : `docker-update now {svc.name} --yes`.", "error")
+                continue
+            if candidate == "(simulation)":
+                self.log(f"  {svc.name}: simulation — l'image candidate serait téléchargée pour lire sa version")
+                continue
+            fixed = [a for a in affecting if self._affects(a, candidate) is False]
+            if not fixed:
+                self.alert(f"candidate-touchee:{svc.name}:{e.remote}:{affecting[0]['id']}",
+                           f"Avis de sécurité : pas de correctif dans la nouvelle image de {svc.name}",
+                           f"{names}. L'image candidate ({candidate}) est elle aussi concernée ou non confirmée : délai normal conservé.")
+                continue
+            e.fast, e.sec_version = True, candidate
+            e.sec_ids = [a["id"] for a in fixed]
+            e.adv_pub = max(a["pub"] for a in fixed)
+            e.urgent = any(a["sev"] == "critical" for a in fixed)
+            fixed_names = ", ".join(f"{a['id']} ({a['sev'] or '?'})" for a in fixed)
+            if svc.security_policy == "fast" and svc.mode == "auto":
+                if not e.failed_before and now >= self._ready_at(e):
+                    e.eligible = True
+                self.alert(f"correctif:{svc.name}:{e.remote}", f"Correctif de sécurité détecté : {svc.name}",
+                           f"{fixed_names} corrigé dans {candidate} (en cours : {current}). Mise à jour accélérée : "
+                           f"délai ramené à {fmt_duration(svc.security_cooldown)}.", "warn")
+            else:
+                why = "mode non automatique" if svc.mode != "auto" else "politique « alert »"
+                self.alert(f"correctif:{svc.name}:{e.remote}", f"Correctif de sécurité disponible : {svc.name}",
+                           f"{fixed_names} corrigé dans {candidate} (en cours : {current}). Pas de mise à jour "
+                           f"automatique ({why}) : `docker-update now {svc.name} --yes` pour l'appliquer.", "warn")
+
+    def _candidate_version(self, e: Eval) -> str:
+        """Version de l'image candidate : on la télécharge (sans l'exécuter) pour lire ses étiquettes."""
+        repo, _, _ = split_ref(e.ref)
+        target = f"{repo}@{e.remote}"
+        r = self.run.run(["docker", "pull", target], mutating=True, timeout=1800)
+        if self.run.dry_run:
+            return "(simulation)"
+        if r.rc != 0:
+            return ""
+        return self._version_of(target)
+
+    # -- application ---------------------------------------------------------
+
+    def _up(self, svc: Service) -> bool:
+        r = self.run.run(self._base(svc) + ["up", "-d", "--no-deps", "--pull", "never", "--wait",
+                                            "--wait-timeout", str(svc.health_timeout), svc.service],
+                         mutating=True, timeout=svc.health_timeout + 120)
+        if r.rc != 0:
+            self.log(f"  up a échoué pour {svc.name}: {r.err.strip()[:200]}")
+            return False
+        if self.run.dry_run:
+            return True
+        self.sleep(self.cfg.settings.settle_seconds)
+        try:
+            cid = self.container_id(svc)
+        except UpdateError:
+            return False
+        if not cid:
+            return False
+        r = self.run.run(["docker", "inspect", "--format",
+                          "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}", cid])
+        status, _, health = r.out.strip().partition("|")
+        ok = status == "running" and health in ("", "healthy")
+        if not ok:
+            self.log(f"  {svc.name}: état après démarrage = {status}/{health or '-'}")
+            return False
+        if not self.smoke(svc):
+            self.log(f"  {svc.name}: test de fumée en échec ({svc.smoke_url})")
+            return False
+        return True
+
+    def apply(self, unit: str, todo: list[Eval]) -> bool:
+        names = ", ".join(e.svc.name for e in todo)
+        self.log(f"mise à jour de {unit} : {names}")
+        for e in todo:
+            for cmd in e.svc.pre_hook:
+                r = self.run.run(cmd, mutating=True, timeout=1800)
+                if r.rc != 0:
+                    msg = f"{unit}: crochet avant mise à jour en échec ({shlex.join(cmd[:1])}), rien n'a été modifié"
+                    self.log(msg)
+                    self.notifier.send(f"Mise à jour annulée : {unit}", msg, "error")
+                    return False
+        targets: dict[str, tuple[str, str, str]] = {}
+        old_ids: dict[str, str] = {}
+        for e in todo:
+            repo, _, _ = split_ref(e.ref)
+            targets.setdefault(e.ref, (repo, e.remote, e.ref))
+            old_ids.setdefault(e.ref, e.old_image_id)
+        for ref, (repo, digest, _) in targets.items():
+            r = self.run.run(["docker", "pull", f"{repo}@{digest}"], mutating=True, timeout=1800)
+            if r.rc != 0:
+                msg = f"{unit}: tirage de {repo}@{digest[7:19]} impossible, rien n'a été modifié ({r.err.strip()[:150]})"
+                self.log(msg)
+                self.notifier.send(f"Mise à jour impossible : {unit}", msg, "error")
+                return False
+        for ref, (repo, digest, _) in targets.items():
+            r = self.run.run(["docker", "tag", f"{repo}@{digest}", ref], mutating=True)
+            if r.rc != 0:
+                msg = f"{unit}: étiquetage local de {ref} impossible, rien n'a été modifié"
+                self.log(msg)
+                self.notifier.send(f"Mise à jour impossible : {unit}", msg, "error")
+                return False
+        touched: list[Eval] = []
+        for e in todo:
+            touched.append(e)
+            if not self._up(e.svc):
+                return self._fail(unit, todo, touched, old_ids, targets)
+        shorts = ", ".join(f"{e.svc.name} → {e.remote[7:19]}" for e in todo)
+        sec = sorted({i for e in todo for i in e.sec_ids})
+        if sec:
+            shorts += f"\nCorrectif de sécurité appliqué : {', '.join(sec)}"
+        self.log(f"{unit}: mise à jour réussie ({shorts})")
+        self.notifier.send(f"Mise à jour réussie : {unit}", shorts, "ok")
+        return True
+
+    def _fail(self, unit: str, todo: list[Eval], touched: list[Eval], old_ids: dict[str, str],
+              targets: dict[str, tuple[str, str, str]]) -> bool:
+        for ref, (_, digest, _) in targets.items():
+            rec = self.state.get(ref) or {"digest": digest, "first_seen": int(self.now()), "notified": False}
+            rec["failed"] = True
+            self.state.put(ref, rec)
+        failed = touched[-1].svc.name
+        if not all(e.svc.rollback for e in touched):
+            msg = (f"{unit}: {failed} ne repart pas avec la nouvelle image. RETOUR ARRIÈRE DÉSACTIVÉ pour ce service : "
+                   f"intervention manuelle nécessaire (image précédente conservée localement).")
+            self.log(msg)
+            self.notifier.send(f"ÉCHEC mise à jour : {unit}", msg, "error")
+            return False
+        self.log(f"{unit}: {failed} ne repart pas, retour à l'image précédente")
+        ok = True
+        for e in reversed(touched):
+            # chaque service retrouve SA propre image précédente, même au sein d'un groupe
+            self.run.run(["docker", "tag", e.old_image_id, e.ref], mutating=True)
+            ok = self._up(e.svc) and ok
+        if ok:
+            msg = f"{unit}: {failed} ne repartait pas avec la nouvelle image. Retour à la version précédente réussi."
+            self.notifier.send(f"Mise à jour annulée (retour arrière) : {unit}", msg, "warn")
+        else:
+            msg = f"{unit}: {failed} ne repart pas et le RETOUR ARRIÈRE A AUSSI ÉCHOUÉ. Service probablement arrêté."
+            self.notifier.send(f"URGENT : {unit} hors service", msg, "error")
+        self.log(msg)
+        return False
+
+    # -- cycles --------------------------------------------------------------
+
+    def units(self, evals: list[Eval]) -> dict[str, list[Eval]]:
+        out: dict[str, list[Eval]] = {}
+        for e in evals:
+            out.setdefault(e.svc.unit, []).append(e)
+        return out
+
+    def cycle(self, apply: bool) -> int:
+        evals = [self.evaluate(s) for s in self.cfg.services]
+        self._cleanup_state(evals)
+        self.alerts_on = apply
+        if not apply:
+            # diagnostic de calibrage : la veille de sécurité a besoin de la version lue dans l'image en cours
+            for e in evals:
+                if e.svc.advisories and e.status in ("pending", "uptodate") and e.old_image_id:
+                    v = self._version_of(e.old_image_id)
+                    self.log(f"  veille de sécurité {e.svc.name}: version détectée {v}" if v else
+                             f"  veille de sécurité {e.svc.name}: version NON détectée (étiquette "
+                             f"{self.cfg.settings.version_label} absente) — aucun avis ne pourra être évalué")
+        self.security_pass(evals, allow_pull=apply)
+        for e in evals:
+            self.log(self.describe(e))
+        failures = sum(1 for e in evals if e.status == "error")
+        if not apply:
+            for e in evals:
+                if e.svc.smoke_url and e.status != "skipped":
+                    code = self.http(e.svc.smoke_url)
+                    verdict = "OK" if code in e.svc.smoke_expect else f"INATTENDU (attendu {e.svc.smoke_expect})"
+                    self.log(f"  test de fumée {e.svc.name}: HTTP {code} {verdict}")
+        if apply:
+            minutes = self.minutes()
+            for unit, members in self.units(evals).items():
+                todo = [e for e in members if e.status == "pending" and e.eligible
+                        and not e.failed_before and e.svc.mode == "auto"]
+                if not todo:
+                    continue
+                if not in_window(todo[0].svc.window, minutes) and not any(e.urgent for e in todo):
+                    self.log(f"{unit}: prêt mais hors de la fenêtre horaire, repris au prochain passage")
+                    continue
+                if any(e.urgent for e in todo) and not in_window(todo[0].svc.window, minutes):
+                    self.log(f"{unit}: avis CRITIQUE, la fenêtre horaire est ignorée")
+                if not self.apply(unit, todo):
+                    failures += 1
+            for e in evals:
+                if e.status == "pending" and e.eligible and e.svc.mode == "notify":
+                    rec = self.state.get(e.ref)
+                    if rec and not rec.get("notified"):
+                        self.notifier.send(f"Nouvelle version prête : {e.svc.name}",
+                                           f"image {e.remote[7:19]} vue depuis {fmt_duration(int(self.now()) - e.first_seen)}."
+                                           f" Mise à jour manuelle : `docker-update now {e.svc.name} --yes`", "info")
+                        rec["notified"] = True
+                        self.state.put(e.ref, rec)
+            errs = {e.svc.name: e.detail for e in evals if e.status == "error"}
+            fresh = {k: v for k, v in errs.items() if self.state.data["errors"].get(k) != v}
+            if fresh:
+                self.notifier.send("docker-update : erreurs de vérification",
+                                   "\n".join(f"{k}: {v}" for k, v in fresh.items())[:1500], "warn")
+            self.state.data["errors"] = errs
+            horizon = int(self.now()) - 120 * 86400
+            self.state.data["alerts"] = {k: v for k, v in self.state.data["alerts"].items() if v >= horizon}
+        self.save_state()
+        return 1 if failures else 0
+
+    def now_cmd(self, names: list[str], yes: bool) -> int:
+        selected: list[Service] = []
+        for n in names:
+            match = [s for s in self.cfg.services if s.name == n or s.group == n]
+            if not match:
+                raise UpdateError(f"inconnu : {n} (services : {', '.join(s.name for s in self.cfg.services)})")
+            selected += [s for s in match if s not in selected]
+        held = [s.name for s in selected if self.held(s)]
+        if held:
+            raise UpdateError(f"en pause : {', '.join(held)} (utilisez d'abord `unhold`)")
+        evals = [self.evaluate(s) for s in selected]
+        for e in evals:
+            self.log(self.describe(e))
+        todo_all = [e for e in evals if e.status == "pending"]
+        if not todo_all:
+            self.log("rien à mettre à jour")
+            self.save_state()
+            return 0
+        if not yes:
+            self.log("simulation : ajoutez --yes pour appliquer (le délai est ignoré pour ces services)")
+            return 0
+        failures = 0
+        for unit, members in self.units(todo_all).items():
+            if not self.apply(unit, members):
+                failures += 1
+        self.save_state()
+        return 1 if failures else 0
+
+    def hold(self, names: list[str], on: bool) -> int:
+        known = {s.name for s in self.cfg.services} | {s.group for s in self.cfg.services if s.group}
+        for n in names:
+            if n not in known:
+                raise UpdateError(f"inconnu : {n}")
+        holds = self.state.data["holds"]
+        for n in names:
+            if on and n not in holds:
+                holds.append(n)
+            if not on and n in holds:
+                holds.remove(n)
+        self.save_state()
+        self.log("en pause : " + (", ".join(holds) or "(rien)"))
+        return 0
+
+    def heartbeat(self) -> None:
+        f = self.cfg.settings.heartbeat_url_file
+        if not f or self.run.dry_run:
+            return
+        try:
+            with open(f, encoding="utf-8") as fh:
+                url = fh.read().strip()
+        except OSError:
+            return
+        if url and not 200 <= self.http(url) < 400:
+            self.log("signal de vie non reçu par le service de surveillance")
+
+    def status(self) -> None:
+        if self.state.data["holds"]:
+            self.log("en pause : " + ", ".join(self.state.data["holds"]))
+        if not self.state.images:
+            self.log("aucune image en attente")
+        for ref, rec in sorted(self.state.images.items()):
+            age = int(self.now()) - int(rec.get("first_seen", 0))
+            flags = " [échec]" if rec.get("failed") else ""
+            self.log(f"{ref} → {rec.get('digest', '')[7:19]} vue depuis {fmt_duration(age)}{flags}")
+
+
+# ── Programme principal ─────────────────────────────────────────────────────
+
+def validate(cfg: Config, log: Callable[[str], None] = print) -> int:
+    problems = 0
+    tools = ["docker"] + (["regctl"] if cfg.settings.registry_tool == "regctl" else [])
+    for t in tools:
+        if not shutil.which(t):
+            log(f"ERREUR : {t} introuvable")
+            problems += 1
+    for s in cfg.services:
+        if not os.path.isdir(s.compose_dir):
+            log(f"ERREUR : {s.name}: dossier compose introuvable : {s.compose_dir}")
+            problems += 1
+        for f in s.compose_files:
+            if not os.path.isfile(f):
+                log(f"ERREUR : {s.name}: fichier compose introuvable : {f}")
+                problems += 1
+        for h in s.pre_hook:
+            if not os.access(h[0], os.X_OK):
+                log(f"ERREUR : {s.name}: crochet non exécutable : {h[0]}")
+                problems += 1
+    nu = cfg.settings.notify_url_file
+    if nu:
+        if not os.path.isfile(nu):
+            log(f"AVERTISSEMENT : fichier d'URL de notification absent : {nu} (aucune notification)")
+        elif os.stat(nu).st_mode & 0o077:
+            log(f"AVERTISSEMENT : {nu} est lisible par d'autres comptes (chmod 600)")
+    log(f"{len(cfg.services)} service(s), {len({s.unit for s in cfg.services})} unité(s) : "
+        f"{'OK' if not problems else str(problems) + ' problème(s)'}")
+    return 1 if problems else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="docker-update", description=__doc__.split("\n")[0])
+    ap.add_argument("--config", default="/etc/docker-update/updates.toml")
+    ap.add_argument("--dry-run", action="store_true", help="n'exécute aucune commande qui modifie quelque chose")
+    ap.add_argument("--allow-untrusted-config", action="store_true",
+                    help="ne pas exiger une configuration appartenant à root (tests uniquement)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("validate")
+    sub.add_parser("check")
+    sub.add_parser("run")
+    sub.add_parser("status")
+    sub.add_parser("notify-test")
+    p_hold = sub.add_parser("hold")
+    p_hold.add_argument("names", nargs="+")
+    p_unhold = sub.add_parser("unhold")
+    p_unhold.add_argument("names", nargs="+")
+    p_now = sub.add_parser("now")
+    p_now.add_argument("names", nargs="+")
+    p_now.add_argument("--yes", action="store_true")
+    args = ap.parse_args(argv)
+
+    def log(msg: str) -> None:
+        print(msg, flush=True)
+
+    try:
+        if not args.allow_untrusted_config:
+            check_trusted_file(args.config)
+        cfg = load_config(args.config)
+        if args.cmd == "validate":
+            return validate(cfg, log)
+        lock = open(cfg.settings.lock_file, "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            log("un autre passage est en cours, rien à faire")
+            return 0
+        runner = Runner(dry_run=args.dry_run, log=log)
+        notifier = Notifier(cfg.settings.notify_url_file, cfg.settings.notify_format, log, dry_run=args.dry_run)
+        up = Updater(cfg, runner, notifier, State(cfg.settings.state_file), log=log, persist=not args.dry_run)
+        if args.cmd == "check":
+            return up.cycle(apply=False)
+        if args.cmd == "run":
+            rc = up.cycle(apply=True)
+            if rc == 0:
+                up.heartbeat()
+            return rc
+        if args.cmd == "now":
+            return up.now_cmd(args.names, args.yes)
+        if args.cmd == "notify-test":
+            if not notifier._url():
+                log("aucune URL de notification lisible (notify_url_file)")
+                return 1
+            notifier.send("docker-update : test", "Si vous lisez ceci, les notifications fonctionnent.", "info")
+            log("message de test envoyé (ou signalé ci-dessus en cas d'échec)")
+            return 0
+        if args.cmd in ("hold", "unhold"):
+            return up.hold(args.names, args.cmd == "hold")
+        up.status()
+        return 0
+    except ConfigError as e:
+        log(f"configuration : {e}")
+        return 2
+    except UpdateError as e:
+        log(f"erreur : {e}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,12 @@
+[Unit]
+Description=Passage horaire de docker-update
+
+[Timer]
+OnBootSec=10min
+# Toutes les heures : l'observation est légère, et la fenêtre horaire (ex. 02:00-05:00) décide de l'application.
+OnCalendar=*-*-* *:07:00
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

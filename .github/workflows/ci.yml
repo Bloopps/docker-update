@@ -1,0 +1,20 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Version de Python
+        run: python3 --version
+      - name: Tests (logique, faux monde Docker, bout en bout)
+        run: python3 -W error::ResourceWarning -m unittest discover -s tests -v
+      - name: Syntaxe du crochet de sauvegarde
+        run: bash -n deploy/tirelire-predump.sh

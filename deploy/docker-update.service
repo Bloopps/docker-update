@@ -1,0 +1,38 @@
+[Unit]
+Description=Mises à jour des images Docker avec délai de sécurité (docker-update)
+Documentation=https://github.com/Bloopps/docker-update/blob/main/docs/AGENT.md
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# PHASE D'OBSERVATION : « check » n'applique rien. Passer à « run » seulement après validation (voir AGENT.md).
+ExecStart=/usr/local/sbin/docker-update --config /etc/docker-update/updates.toml check
+# Identifiants du registre (jeton en LECTURE SEULE) : dans le dossier d'état, hors de ~ubuntu
+Environment=DOCKER_CONFIG=/var/lib/docker-update/docker
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=idle
+
+# Durcissement : le script a besoin de parler à Docker, de lire les dossiers compose et d'écrire son état.
+User=root
+StateDirectory=docker-update
+StateDirectoryMode=0700
+RuntimeDirectory=docker-update
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# La sauvegarde avant mise à jour de la tirelire écrit ici (le « - » tolère l'absence du dossier).
+ReadWritePaths=-/home/ubuntu/tirelire/backups
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
