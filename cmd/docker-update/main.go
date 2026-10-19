@@ -17,5 +17,7 @@ func versionString() string {
 }
 
 func main() {
-	os.Exit(cli.Main(os.Args[1:], cli.DefaultEnv(versionString())))
+	env := cli.DefaultEnv(versionString())
+	env.Tag = version
+	os.Exit(cli.Main(os.Args[1:], env))
 }

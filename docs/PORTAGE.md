@@ -436,3 +436,8 @@ Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *ef
 - **Recommandation** : `rename` et la vérification des dépôts : faire ; `edit` et l'export : à discuter.
 - **État** : `rename`, `validate --online`, `edit` et `export` appliqués (écarts n° 34, 35, 37 et 38).
 
+
+### Proposition 8 : publication automatique des releases et commande `update`
+- **Quoi** : `release.yml` publie une release à chaque fusion sur `main` (étiquette `vX.Y.Z` calculée : dernière + 1 sur le correctif ; étiquette manuelle toujours possible) ; la commande `update` remplace le binaire par celui de la dernière release (SHA256SUMS vérifié, ELF contrôlé, renommage atomique, jamais de retour en arrière, ni configuration ni conteneurs touchés).
+- **Effet** : une commande et un workflow nouveaux ; aucun changement des commandes existantes. **Risque** : faible (le binaire n'est remplacé qu'après vérification) ; la confiance repose sur le dépôt GitHub (limite documentée).
+- **État** : appliquée, à vérifier une fois en conditions réelles (première release automatique après fusion).

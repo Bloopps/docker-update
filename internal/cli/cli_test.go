@@ -16,6 +16,7 @@ import (
 	"github.com/Bloopps/docker-update/internal/config"
 	"github.com/Bloopps/docker-update/internal/dockerx"
 	"github.com/Bloopps/docker-update/internal/notify"
+	"github.com/Bloopps/docker-update/internal/selfupdate"
 	"github.com/Bloopps/docker-update/internal/state"
 	"github.com/Bloopps/docker-update/internal/tomlmini"
 )
@@ -393,5 +394,33 @@ func TestUnknownNameExitsWith1(t *testing.T) {
 	}
 	if !strings.Contains(r.out.String(), "erreur : inconnu : inconnu") {
 		t.Errorf("sortie : %s", r.out.String())
+	}
+}
+
+func TestUpdateCommandNeedsNoConfigAndCheckChangesNothing(t *testing.T) {
+	var out, errOut strings.Builder
+	target := filepath.Join(t.TempDir(), "docker-update")
+	os.WriteFile(target, []byte("ancien"), 0o755)
+	fetched := 0
+	env := &Env{Stdout: &out, Stderr: &errOut, Tag: "v0.1.0", UpdateDeps: func() selfupdate.Deps {
+		return selfupdate.Deps{Repo: "o/r", APIBase: "https://api.test", DownloadBase: "https://dl.test", GOOS: "linux", GOARCH: "amd64", Current: "v0.1.0", Target: target,
+			Fetch: func(url string, limit int64) ([]byte, error) { fetched++; return []byte(`{"tag_name":"v0.2.0"}`), nil }}
+	}}
+	// configuration inexistante : `update` ne doit pas la lire
+	if code := Main([]string{"--config", filepath.Join(t.TempDir(), "absente.toml"), "update", "--check"}, env); code != 0 {
+		t.Fatalf("code %d : %s %s", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "v0.2.0") || fetched != 1 {
+		t.Fatalf("sortie %q, %d lectures", out.String(), fetched)
+	}
+	out.Reset()
+	if code := Main([]string{"--dry-run", "update"}, env); code != 0 || fetched != 2 {
+		t.Fatalf("--dry-run a téléchargé : code %d, %d lectures", code, fetched)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "ancien" {
+		t.Fatal("binaire modifié")
+	}
+	if code := Main([]string{"update", "--oups"}, env); code != 2 {
+		t.Fatalf("option inconnue : code %d", code)
 	}
 }

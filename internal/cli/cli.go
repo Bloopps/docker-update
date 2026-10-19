@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/Bloopps/docker-update/internal/dockerx"
 	"github.com/Bloopps/docker-update/internal/github"
 	"github.com/Bloopps/docker-update/internal/notify"
+	"github.com/Bloopps/docker-update/internal/selfupdate"
 	"github.com/Bloopps/docker-update/internal/state"
 	"github.com/Bloopps/docker-update/internal/updater"
 )
@@ -64,6 +66,10 @@ type Env struct {
 	GHGet github.GetFunc
 	// Now donne l'heure (nom des sauvegardes) ; défaut : time.Now.
 	Now func() time.Time
+	// UpdateDeps donne ce que `update` utilise (défaut : releases GitHub réelles, binaire en cours).
+	UpdateDeps func() selfupdate.Deps
+	// Tag est l'étiquette de release compilée dans le binaire (« v1.2.3 », ou « dev »).
+	Tag string
 	// NewEngine construit le cœur (défaut : updater.New).
 	in        *bufio.Reader
 	inSrc     io.Reader
@@ -152,6 +158,12 @@ func (e *Env) fill() {
 	if e.Now == nil {
 		e.Now = time.Now
 	}
+	if e.UpdateDeps == nil {
+		e.UpdateDeps = func() selfupdate.Deps {
+			return selfupdate.Deps{Fetch: selfupdate.HTTPFetch, Repo: "Bloopps/docker-update", APIBase: "https://api.github.com",
+				DownloadBase: "https://github.com", GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Current: e.Tag, Target: e.Binary}
+		}
+	}
 	if e.NewEngine == nil {
 		e.NewEngine = func(cfg *config.Config, run dockerx.Runner, n *notify.Notifier, st *state.State, log func(string), noSave bool) Engine {
 			return updater.New(updater.Deps{Cfg: cfg, Run: run, Notifier: n, State: st, Log: log, NoSave: noSave})
@@ -215,6 +227,9 @@ func Main(args []string, env *Env) int {
 }
 
 func execute(g globals, cmd string, sub subArgs, env *Env, log func(string)) (int, error) {
+	if cmd == "update" { // ne lit pas la configuration : elle peut être absente ou cassée
+		return updateCmd(env, g, sub, log)
+	}
 	if cmd == "init" { // la configuration n'existe pas encore : init la crée
 		return initCmd(env, g, sub, log)
 	}

@@ -21,6 +21,8 @@ chmod +x docker-update-linux-amd64
 sudo ./docker-update-linux-amd64 init
 ```
 
+Ensuite, `sudo docker-update update` installe la dernière release (somme SHA256 vérifiée, binaire seul remplacé ; `--check` pour voir sans installer). Chaque fusion sur `main` publie une release.
+
 `init` fait tout, dans l'ordre, en vous demandant avant chaque modification :
 
 1. **Vérifie** le serveur : Docker et `compose`, droits, accès au registre et à GitHub. Ce qui bloque est expliqué avec la commande qui le corrige.

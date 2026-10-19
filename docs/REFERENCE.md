@@ -10,8 +10,9 @@ Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
 ## Installation
 
 Le binaire Go est statique (aucune dépendance) pour Linux **amd64** et **arm64**. Il lui faut seulement `docker` (avec le plugin `compose`)
-sur l'hôte, et `regctl` si `registry_tool = "regctl"`. Une étiquette `v*` déclenche la publication d'une release GitHub (binaires
-`docker-update-linux-amd64` et `-arm64` et `SHA256SUMS`, à vérifier avec `sha256sum -c`) ; sinon on compile
+sur l'hôte, et `regctl` si `registry_tool = "regctl"`. Chaque fusion sur `main` publie une release GitHub (étiquette `vX.Y.Z` = dernière étiquette + 1 sur le correctif, `v0.1.0` à la
+première ; une étiquette `v*` poussée à la main publie aussi) avec les binaires `docker-update-linux-amd64` et `-arm64` et
+`SHA256SUMS` (à vérifier avec `sha256sum -c`, ou laisser `update` le faire, voir plus bas) ; sinon on compile
 (`CGO_ENABLED=0 go build -trimpath -o docker-update ./cmd/docker-update`, Go 1.27 ou plus récent) ou on prend l'artefact de la CI.
 
 **`sudo ./docker-update init`** installe et configure tout :
@@ -87,12 +88,24 @@ L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n
 | `set-webhook` | enregistre l'URL du webhook Discord (saisie masquée ou entrée standard, fichier `600`, jamais affichée) |
 | `notify-test` | envoie un message de test (vérifie le webhook) |
 | `init [--yes] [--check] [--force] [--no-install]` | installe (binaire, dossiers, unités systemd), vérifie, relève les conteneurs Compose qui tournent, crée la configuration et active le minuteur (voir Installation) |
+| `update [--check]` | se met à jour depuis la dernière release GitHub (voir ci-dessous) |
 | `list` | tableau des services configurés : groupe, mode, délai, fenêtre, veille (avis, notes), pause ; lecture seule |
 | `add NOM --compose-dir D --service S [options]` | ajoute **un** service au fichier de configuration (voir ci-dessous) |
 | `rename ANCIEN NOUVEAU [--group]` | renomme un service (ou un groupe avec `--group`) dans le fichier et reporte pauses, erreurs et alertes de l'état sous le nouveau nom |
 | `edit [--yes]` | ouvre une copie de la configuration dans `$VISUAL` / `$EDITOR` (à défaut `vi`) ; si le résultat est invalide, propose de rouvrir ; sinon aperçu, confirmation, sauvegarde, écriture. Refuse d'écrire si le fichier a changé pendant l'édition |
 | `export` | écrit la configuration effective (défauts appliqués, durées en secondes) en JSON sur la sortie standard, pour des scripts ; lecture seule |
 | `delete NOM… [--group G] [--keep-state]` | retire des services du fichier (voir ci-dessous) |
+
+### Mise à jour de l'outil : `update`
+
+`docker-update update` lit la dernière release de `Bloopps/docker-update`, télécharge `docker-update-linux-<arch>` et `SHA256SUMS`
+(https seulement), refuse tout fichier dont la somme SHA256 diffère ou qui n'est pas un ELF de la bonne architecture, puis remplace
+le binaire en cours par un renommage atomique (en cas d'échec, l'ancien reste en place). Il demande les droits d'écriture sur le
+dossier du binaire (en général `sudo`). Il ne lit ni ne modifie la configuration, l'état ou les conteneurs, et n'installe jamais une
+version plus ancienne. `--check` (ou `--dry-run`) dit seulement s'il existe mieux. Une compilation locale (`dev`) est remplacée par la
+dernière release. Les passages déjà lancés gardent l'ancien binaire jusqu'à leur fin ; le suivant utilise le nouveau.
+Limite : la somme et les binaires viennent de la même release ; elle protège d'un téléchargement corrompu, pas d'une release
+malveillante (c'est la confiance accordée au dépôt GitHub).
 
 ### Modifier la configuration : `add`, `rename`, `edit` et `delete`
 
