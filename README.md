@@ -21,7 +21,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe 
 # Installation (root)
 sudo install -d -m 755 -o root -g root /etc/docker-update
 sudo install -m 755 -o root -g root docker-update /usr/local/sbin/docker-update
-sudo install -m 644 -o root -g root updates.toml /etc/docker-update/updates.toml     # partir de examples/
+sudo install -m 644 -o root -g root updates.toml /etc/docker-update/updates.toml     # partir de examples/ (voir la note sur `init`)
 sudo install -m 644 -o root -g root deploy/docker-update.service deploy/docker-update.timer /etc/systemd/system/
 sudo install -d -m 700 -o root -g root /var/lib/docker-update /var/lib/docker-update/docker
 
@@ -31,6 +31,11 @@ sudo docker-update --config /etc/docker-update/updates.toml validate
 sudo docker-update --config /etc/docker-update/updates.toml --dry-run check
 sudo systemctl daemon-reload && sudo systemctl enable --now docker-update.timer
 ```
+
+**`init` (à venir, phase 7).** La commande `docker-update init` prendra en charge la partie *configuration* : elle découvre les
+conteneurs Compose qui tournent (lecture seule), pose les questions service par service, écrit `updates.toml` après aperçu et
+confirmation, propose `set-webhook`, puis lance `validate`. Elle ne remplace pas la pose du binaire ni des unités systemd ci-dessus.
+Elle n'existe pas encore dans le binaire : d'ici là, `updates.toml` se rédige à la main à partir de `examples/`.
 
 L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n'a pas validé le résultat et basculé sur
 `run`. La procédure complète, avec les critères d'acceptation de chaque étape et le retour arrière, est dans
