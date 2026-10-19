@@ -32,8 +32,8 @@ Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
 - **Fenêtre horaire** (`02:00-05:00`) : on observe tout le temps, on n'applique que dans la fenêtre. Un avis *critique* l'ignore.
 - **Groupes** : plusieurs services d'une même image mis à jour ensemble, dans l'ordre du fichier.
 - **Modes par service** : `auto` (applique), `notify` (prévient, vous appliquez), `manual` (ignore).
-- **Notifications Discord** (ntfy ou JSON possibles), sans mention possible, sans doublons, sans jamais journaliser l'URL.
-- **Signal de vie** optionnel (par ex. une URL « push » d'Uptime Kuma) pour savoir si l'outil lui-même s'arrête en silence.
+- **Un seul rapport par passage** sur Discord (ntfy ou JSON possibles) : sections par importance, tableau des versions prêtes,
+  silence s'il n'y a rien de nouveau. Sans mention possible, sans doublons, sans jamais journaliser l'URL. Voir *Notifications*.
 - **Pause** (`hold`), **voie rapide** (`now`), **simulation** (`--dry-run`), verrou contre deux passages simultanés.
 
 ## Sous-commandes
@@ -46,6 +46,7 @@ Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
 | `now NOM… --yes` | applique tout de suite (sans délai ni fenêtre) ; sans `--yes`, simule |
 | `hold NOM…` / `unhold NOM…` | met en pause / reprend |
 | `status` | état mémorisé |
+| `set-webhook` | enregistre l'URL du webhook Discord (saisie masquée ou entrée standard, fichier `600`, jamais affichée) |
 | `notify-test` | envoie un message de test (vérifie le webhook) |
 
 Options globales : `--config CHEMIN`, `--dry-run` (aucune commande qui modifie quoi que ce soit, état non écrit).
@@ -57,7 +58,7 @@ Il doit appartenir à `root` et ne pas être modifiable par d'autres : elle dés
 l'outil **refuse de démarrer** sinon.
 
 **`[settings]`** : `state_file`, `lock_file`, `registry_tool` (`buildx` ou `regctl`), `notify_url_file`, `notify_format`
-(`discord`, `ntfy`, `json`), `heartbeat_url_file`, `default_cooldown`, `window`, `settle_seconds`, `health_timeout`,
+(`discord`, `ntfy`, `json`), `default_cooldown`, `window`, `settle_seconds`, `health_timeout`,
 `github_api`, `github_token_file`, `advisory_poll`, `advisory_lookback`, `version_label`, `cleanup`.
 
 **`[[service]]`** : `name`, `compose_dir`, `service` (obligatoires) ; `compose_files`, `mode` (défaut `notify`, le plus
@@ -77,6 +78,27 @@ frappe dans les clés sont refusées.
 5. Correctif confirmé et politique `fast` en mode `auto` → prêt après `security_cooldown`, compté depuis la plus tardive
    de la première observation de l'image et de la publication de l'avis. Un avis tout frais n'est donc jamais instantané.
 6. Une version « à jour mais vulnérable » (aucune image corrigée n'existe encore) déclenche une alerte, une seule fois.
+
+## Notifications
+
+Un passage `run` (ou `now`) envoie **au plus UN message**, quel que soit le nombre d'applications suivies :
+
+| Section | Contenu |
+| --- | --- |
+| 🚨 Échecs de mise à jour | un service ne repart pas : aucun retour arrière, images précédentes nommées |
+| ⚠️ Sécurité (avis) | correctif détecté, version vulnérable, cas ambigu ; avec le lien de la release qui cite l'avis |
+| 📝 Notes de release | releases plus récentes qui mentionnent un motif de sécurité (alertes seulement) |
+| ⚠️ Erreurs de vérification | registre injoignable, compose illisible… (une fois par erreur) |
+| ✅ Mises à jour réussies | `service → image` |
+| 📦 Nouvelles versions prêtes | **tableau** service / image / vue depuis, pour les services en mode `notify` |
+| ℹ️ Infos | signaux faibles, « impossible de comparer » |
+
+Le niveau du message (✅ ℹ️ ⚠️ 🚨) est celui du pire événement. Rien de nouveau : **aucun message**. Le message est borné à
+environ 1 650 caractères : le plus important vient en premier, le reste est compté (« … N élément(s) non affiché(s) ») et
+reste dans le journal. Les mentions (`@everyone`…) sont neutralisées. `check` n'envoie jamais rien.
+
+L'URL du webhook se règle avec `docker-update set-webhook` : saisie masquée (ou entrée standard), adresse validée (webhook
+Discord), écriture atomique dans `notify_url_file` en `600`, jamais affichée ni passée en argument de ligne de commande.
 
 ## Veille des notes de release (alertes seulement)
 
@@ -142,7 +164,7 @@ vôtre (ex. 9.0.1 alors que vous suivez 8.1) est signalée aussi. Une note qui n
 ## Tests et qualité
 
 ```sh
-python3 -m unittest discover -s tests -v      # 201 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
+python3 -m unittest discover -s tests -v      # 252 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
 ```
 
 Les tests de bout en bout lancent le **vrai programme** en sous-processus, avec un faux exécutable `docker` placé dans le
@@ -154,7 +176,8 @@ détectés ; il a aussi révélé trois angles morts des tests, comblés, et un 
 Il n'est pas rejoué par la CI.
 Un troisième, sur le nettoyage des images, a introduit 12 défauts (suppression forcée, après un échec, en simulation,
 réglage par service ignoré…) : les 12 sont détectés.
-D'autres, sur l'échec sans retour arrière (9), les conteneurs arrêtés (6) et le rapprochement avis / notes (12), l'ont été de même.
+D'autres, sur l'échec sans retour arrière (9), les conteneurs arrêtés (6), le rapprochement avis / notes (12), le rapport
+unique et la commande `set-webhook` (20), l'ont été de même.
 Un second test de mutation, sur la veille des notes de release, a introduit 33 défauts (accélération par une note, pré-version
 non ignorée, mot `security` seul pris pour fort, `@everyone` non neutralisé, doublon d'alerte…) : 32 détectés après
 correction de 5 angles morts des tests ; le dernier est équivalent (valeur par défaut jamais lue).

@@ -9,9 +9,8 @@
 state_file        = "/var/lib/docker-update/state.json"
 lock_file         = "/run/docker-update/lock"
 registry_tool     = "buildx"                         # buildx (manifeste brut) ou regctl (requête HEAD)
-notify_url_file   = "/etc/docker-update/discord_webhook"   # root:root 600, UNE ligne : l'URL du webhook
+notify_url_file   = "/etc/docker-update/discord_webhook"   # root:root 600 ; à remplir avec `docker-update set-webhook` (saisie masquée)
 notify_format     = "discord"
-heartbeat_url_file = "/etc/docker-update/heartbeat_url"    # optionnel (ex. URL « push » d'Uptime Kuma) ; supprimer si inutilisé
 default_cooldown  = "3d"                             # une image doit rester identique ce temps avant d'être appliquée
 window            = "02:00-05:00"                    # on n'applique que la nuit ; "" = à toute heure
 cleanup           = true                             # supprime l'image précédente après une mise à jour RÉUSSIE (jamais forcé) ; par service aussi

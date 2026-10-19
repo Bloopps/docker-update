@@ -16,7 +16,6 @@ Fonctions
   - test de fumée HTTP après la mise à jour ; nettoyage de l'image précédente une fois la mise à jour réussie ;
   - pause (hold) ;
   - notifications Discord (ntfy ou JSON possibles), anti-spam des erreurs répétées ;
-  - signal de vie (heartbeat) pour détecter un arrêt silencieux de l'outil ;
   - veille de sécurité : lit les avis de sécurité publiés par les dépôts GitHub des projets suivis ; si la
     version en cours est affectée ET que l'image candidate (version lue dans ses étiquettes) ne l'est plus,
     le délai est raccourci (`security_cooldown`, 6 h par défaut). Tout cas ambigu devient une ALERTE seule.
@@ -29,6 +28,7 @@ Sous-commandes
   hold NOM...       met en pause (aucune mise à jour automatique) ; unhold NOM... reprend
   status            affiche l'état mémorisé
   notify-test       envoie un message de test (vérifie le webhook), ne touche à rien
+  set-webhook       enregistre l'URL du webhook Discord (saisie masquée, fichier 600, jamais affichée)
 
 Bibliothèque standard seulement (Python >= 3.11).
 """
@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import fcntl
+import getpass
 import hashlib
 import json
 import os
@@ -300,7 +301,6 @@ class Settings:
     settle_seconds: int = 15
     health_timeout: int = 180
     window: str = ""
-    heartbeat_url_file: str = ""
     github_api: str = "https://api.github.com"
     github_token_file: str = ""
     advisory_poll: int = 3600
@@ -343,7 +343,7 @@ class Config:
 
 
 _SETTINGS_KEYS = {"state_file", "lock_file", "registry_tool", "notify_url_file", "notify_format",
-                  "default_cooldown", "settle_seconds", "health_timeout", "window", "heartbeat_url_file",
+                  "default_cooldown", "settle_seconds", "health_timeout", "window",
                   "github_api", "github_token_file", "advisory_poll", "advisory_lookback", "version_label", "cleanup"}
 _SERVICE_KEYS = {"name", "compose_dir", "service", "compose_files", "mode", "cooldown", "group",
                  "health_timeout", "window", "smoke_url", "smoke_expect",
@@ -354,6 +354,7 @@ _SERVICE_KEYS = {"name", "compose_dir", "service", "compose_files", "mode", "coo
 _REMOVED_KEYS = {
     "rollback": "en cas d'échec l'outil alerte et ne touche à rien : aucun retour arrière automatique",
     "pre_hook": "la sauvegarde se gère en dehors de l'outil",
+    "heartbeat_url_file": "seules les notifications Discord existent",
 }
 
 
@@ -370,7 +371,7 @@ def parse_config(data: dict) -> Config:
     raw = dict(data.get("settings", {}))
     _check_keys("[settings]", raw, _SETTINGS_KEYS)
     st = Settings()
-    for k in ("state_file", "lock_file", "notify_url_file", "heartbeat_url_file", "window",
+    for k in ("state_file", "lock_file", "notify_url_file", "window",
               "github_api", "github_token_file", "version_label"):
         if k in raw:
             setattr(st, k, str(raw[k]))
@@ -669,6 +670,107 @@ class Notifier:
             self.log(f"notification non envoyée ({type(e).__name__})")
 
 
+# ── Rapport : un seul message par passage ───────────────────────────────────
+
+# (clé, icône, titre de section, singulier, pluriel) — du plus important au moins important
+REPORT_SECTIONS = (
+    ("echec", "🚨", "Échecs de mise à jour", "échec", "échecs"),
+    ("secu", "⚠️", "Sécurité (avis)", "alerte de sécurité", "alertes de sécurité"),
+    ("notes", "📝", "Notes de release (alertes seulement, délai inchangé)", "note de release", "notes de release"),
+    ("erreur", "⚠️", "Erreurs de vérification", "erreur", "erreurs"),
+    ("maj", "✅", "Mises à jour réussies", "mise à jour", "mises à jour"),
+    ("pret", "📦", "Nouvelles versions prêtes (à appliquer avec `docker-update now <service> --yes`)", "version prête", "versions prêtes"),
+    ("info", "ℹ️", "Infos", "info", "infos"),
+)
+LEVEL_RANK = {"info": 0, "ok": 1, "warn": 2, "error": 3}
+REPORT_BUDGET = 1650            # caractères : sous la limite de Discord (1900) avec le titre
+REPORT_LINES, REPORT_LINE = 5, 300
+
+
+class Report:
+    """Regroupe tout ce qu'un passage a à dire en UN message : sections par importance, tableau des versions prêtes."""
+
+    def __init__(self) -> None:
+        self.items: dict[str, list[tuple[str, str, str]]] = {k: [] for k, *_ in REPORT_SECTIONS}
+        self.rows: list[tuple[str, str, str]] = []              # tableau « nouvelles versions prêtes »
+
+    def add(self, kind: str, title: str, text: str = "", level: str = "info") -> None:
+        self.items[kind].append((title, text, level))
+
+    def add_ready(self, service: str, image: str, since: str) -> None:
+        self.rows.append((service, image, since))
+
+    def empty(self) -> bool:
+        return not self.rows and not any(self.items.values())
+
+    def counts(self) -> dict[str, int]:
+        c = {k: len(v) for k, v in self.items.items()}
+        c["pret"] += len(self.rows)
+        return {k: n for k, n in c.items() if n}
+
+    def level(self) -> str:
+        levels = [lv for v in self.items.values() for _, _, lv in v] + (["info"] if self.rows else [])
+        return max(levels, key=LEVEL_RANK.__getitem__, default="info")
+
+    def title(self) -> str:
+        parts = []
+        for key, _, _, one, many in REPORT_SECTIONS:
+            n = self.counts().get(key, 0)
+            if n:
+                parts.append(f"{n} {one if n == 1 else many}")
+        return "docker-update : " + " · ".join(parts)
+
+    def render(self, fence: bool = True, budget: int = REPORT_BUDGET) -> str:
+        """Texte du rapport, borné. Ce qui ne tient pas est compté, jamais coupé au milieu d'une ligne."""
+        out: list[str] = []
+        used = 0
+        hidden = 0
+
+        def esc(value, limit: int) -> str:
+            return clean_text(value, limit).replace("@", "@\u200b")        # aucune mention possible, quel que soit le format
+
+        def put(lines: list[str]) -> bool:
+            nonlocal used
+            size = sum(len(x) + 1 for x in lines)
+            if used + size > budget:
+                return False
+            out.extend(lines)
+            used += size
+            return True
+
+        for key, icon, heading, _, _ in REPORT_SECTIONS:
+            items = self.items[key]
+            rows = self.rows if key == "pret" else []
+            if not items and not rows:
+                continue
+            block = [f"{icon} **{heading}**"] if fence else [f"{heading} :"]
+            if not put(block):
+                hidden += len(items) + len(rows)
+                continue
+            for title, text, _ in items:
+                lines = [f"• **{esc(title, 120)}**" if fence else f"- {esc(title, 120)}"]
+                for extra in [x for x in str(text).split("\n") if x.strip()][:REPORT_LINES]:
+                    lines.append("  " + esc(extra, REPORT_LINE))
+                if not put(lines):
+                    hidden += 1
+            if rows:
+                body = [(clean_text(x, 28), clean_text(y, 14), clean_text(z, 12)) for x, y, z in rows]
+
+                def table(n: int) -> list[str]:
+                    data = [("service", "image", "vue depuis")] + body[:n]
+                    widths = [max(len(r[i]) for r in data) for i in range(3)]
+                    lines = ["  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip() for r in data]
+                    return ["```"] + lines + ["```"] if fence else lines
+
+                n = len(body)
+                while n > 0 and not put(table(n)):
+                    n -= 1
+                hidden += len(body) - n
+        if hidden:
+            out.append(f"… {hidden} élément(s) non affiché(s) : voir le journal (`journalctl -u docker-update`).")
+        return "\n".join(out)
+
+
 def github_get(url: str, token: str = "", etag: str = "") -> tuple[int, object, str]:
     """GET JSON sur l'API GitHub. Retourne (code HTTP, contenu, ETag) ; code 0 si le réseau échoue.
     Le jeton éventuel ne sert qu'à relever la limite de requêtes ; il n'est jamais journalisé.
@@ -707,6 +809,61 @@ def http_status(url: str, timeout: int = 10) -> int:
         return 0
 
 
+DISCORD_WEBHOOK_RE = re.compile(
+    r"^https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/(?:v\d{1,2}/)?webhooks/\d{5,25}/[A-Za-z0-9_-]{20,120}$")
+GENERIC_URL_RE = re.compile(r"^https?://[^\s/]+(?:/\S*)?$")
+
+
+def check_webhook_url(url: str, fmt: str) -> str:
+    """Valide l'URL saisie. Les messages d'erreur ne répètent jamais l'URL (c'est un secret)."""
+    url = url.strip()
+    if not url or len(url) > 600:
+        raise ConfigError("URL de notification vide ou trop longue")
+    if fmt == "discord":
+        if not DISCORD_WEBHOOK_RE.match(url):
+            raise ConfigError("ce n'est pas une URL de webhook Discord (attendu : https://discord.com/api/webhooks/<id>/<jeton>)")
+    elif not GENERIC_URL_RE.match(url):
+        raise ConfigError("URL de notification invalide (attendu : http(s)://hôte/chemin)")
+    return url
+
+
+def write_secret_file(path: str, content: str) -> None:
+    """Écriture atomique d'un fichier secret : droits 600 dès sa création, jamais lisible par d'autres."""
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".secret-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def set_webhook(cfg: Config, dry_run: bool, log: Callable[[str], None] = print) -> int:
+    """Enregistre l'URL du webhook dans `notify_url_file` (600). L'URL se saisit au clavier (masquée) ou arrive sur
+    l'entrée standard ; elle n'est JAMAIS un argument de ligne de commande (historique du shell, `ps`)."""
+    path = cfg.settings.notify_url_file
+    if not path:
+        raise ConfigError("notify_url_file n'est pas défini dans [settings] : on ne sait pas où enregistrer l'URL")
+    if sys.stdin.isatty():
+        raw = getpass.getpass("URL du webhook (la saisie reste invisible) : ")
+    else:
+        raw = sys.stdin.readline()
+    url = check_webhook_url(raw, cfg.settings.notify_format)
+    if dry_run:
+        log(f"[simulation] URL valide ; elle serait enregistrée dans {path} (droits 600)")
+        return 0
+    write_secret_file(path, url + "\n")
+    log(f"URL enregistrée dans {path} (droits 600, jamais affichée). Vérifiez avec : docker-update notify-test")
+    return 0
+
+
 def local_minutes() -> int:
     t = time.localtime()
     return t.tm_hour * 60 + t.tm_min
@@ -743,6 +900,7 @@ class Updater:
         self.http, self.minutes, self.persist = http, minutes, persist
         self.gh_get = gh_get
         self.alerts_on = False
+        self.report = Report()
         self._notes: dict[str, dict[str, tuple[str, str]]] = {}     # service -> {avis cité (minuscules): (release, lien)}
 
     def held(self, svc: Service) -> bool:
@@ -980,9 +1138,16 @@ class Updater:
         observation de l'image et publication de l'avis. Un avis tout neuf ne déclenche donc rien d'instantané."""
         return max(e.first_seen, e.adv_pub) + e.svc.security_cooldown
 
+    def flush(self) -> None:
+        """Envoie UN message pour tout ce que le passage a à dire (rien s'il n'y a rien)."""
+        rep_, self.report = self.report, Report()
+        if rep_.empty():
+            return
+        self.notifier.send(rep_.title(), rep_.render(self.cfg.settings.notify_format == "discord"), rep_.level())
+
     def alert(self, key: str | list[str], title: str, text: str, level: str = "warn",
-              label: str = "ALERTE sécurité") -> None:
-        """Journalise, puis notifie une seule fois par clé (plusieurs clés : un message pour le lot)."""
+              label: str = "ALERTE sécurité", kind: str = "secu") -> None:
+        """Journalise, puis signale une seule fois par clé (plusieurs clés : une ligne pour le lot) dans le rapport."""
         self.log(f"  {label} : {title} — {text}")
         if not self.alerts_on:
             return
@@ -992,7 +1157,7 @@ class Updater:
             return
         for k in keys:
             alerts[k] = int(self.now())
-        self.notifier.send(title, text, level)
+        self.report.add(kind, title, text, level)
 
     def _recent_advisories(self, svc: Service) -> list[dict]:
         """Avis récents, non retirés, de sévérité suffisante, pour les dépôts `advisories` du service."""
@@ -1014,7 +1179,7 @@ class Updater:
                     break
         if not found:
             return ""
-        return " Notes de release qui le citent : " + ", ".join(f"{t} {u}" for t, u in list(dict.fromkeys(found))[:3]) + "."
+        return "\nNotes de release qui le citent : " + ", ".join(f"{t} {u}" for t, u in list(dict.fromkeys(found))[:3]) + "."
 
     def security_pass(self, evals: list[Eval], allow_pull: bool) -> None:
         now = int(self.now())
@@ -1115,7 +1280,7 @@ class Updater:
                 self.alert(f"release-version:{svc.name}", f"Notes de release non analysées : {svc.name}",
                            f"Impossible de comparer : la version en cours est absente ou illisible (étiquette "
                            f"{self.cfg.settings.version_label}). Aucune note de release n'est lue pour ce service.",
-                           "info", RELEASE_LABEL)
+                           "info", RELEASE_LABEL, kind="info")
                 continue
             ignore = [re.compile(p, re.IGNORECASE) for p in svc.release_notes_ignore]
             newer: list[tuple[tuple, str, dict]] = []
@@ -1164,7 +1329,7 @@ class Updater:
                     self.alert(f"release:{svc.name}:{tag}", f"Notes de release à lire : {svc.name} {shown} → {tag}",
                                f"Motifs : {motifs}\nExtrait : « {self._external(rest[0]['x'], 160)} »\nLien : {url}\n"
                                + (f"Déjà couvert par l'avis : {ids}.\n" if known else "")
-                               + "Alerte seulement : le délai de mise à jour n'est pas modifié.", "warn", RELEASE_LABEL)
+                               , "warn", RELEASE_LABEL, kind="notes")
                 elif it["weak"]:
                     if not self.alerts_on or f"release-info:{svc.name}:{tag}" not in alerts:
                         weak.append((tag, url))
@@ -1173,7 +1338,7 @@ class Updater:
                 self.alert([f"release-info:{svc.name}:{t}" for t, _ in weak],
                            f"Notes de release : {svc.name} {shown}, mot « security » dans {len(weak)} release(s)",
                            "Signal faible (le mot seul, sans CVE ni correctif annoncé) :\n" + "\n".join(lines),
-                           "info", RELEASE_LABEL)
+                           "info", RELEASE_LABEL, kind="notes")
 
     def _candidate_version(self, e: Eval) -> str:
         """Version de l'image candidate : on la télécharge (sans l'exécuter) pour lire ses étiquettes."""
@@ -1230,14 +1395,14 @@ class Updater:
             if r.rc != 0:
                 msg = f"{unit}: tirage de {repo}@{digest[7:19]} impossible, rien n'a été modifié ({r.err.strip()[:150]})"
                 self.log(msg)
-                self.notifier.send(f"Mise à jour impossible : {unit}", msg, "error")
+                self.report.add("echec", f"Mise à jour impossible : {unit}", msg, "error")
                 return False
         for ref, (repo, digest, _) in targets.items():
             r = self.run.run(["docker", "tag", f"{repo}@{digest}", ref], mutating=True)
             if r.rc != 0:
                 msg = f"{unit}: étiquetage local de {ref} impossible, rien n'a été modifié"
                 self.log(msg)
-                self.notifier.send(f"Mise à jour impossible : {unit}", msg, "error")
+                self.report.add("echec", f"Mise à jour impossible : {unit}", msg, "error")
                 return False
         touched: list[Eval] = []
         for e in todo:
@@ -1249,7 +1414,8 @@ class Updater:
         if sec:
             shorts += f"\nCorrectif de sécurité appliqué : {', '.join(sec)}"
         self.log(f"{unit}: mise à jour réussie ({shorts})")
-        self.notifier.send(f"Mise à jour réussie : {unit}", shorts, "ok")
+        first, _, more = shorts.partition("\n")
+        self.report.add("maj", first, more, "ok")
         self._cleanup(todo, old_ids)
         return True
 
@@ -1280,12 +1446,13 @@ class Updater:
         failed = touched[-1].svc.name
         before = ", ".join(f"{e.svc.name} ({short_id(e.old_image_id)})" for e in touched)
         untouched = [e.svc.name for e in todo if e not in touched]
-        msg = (f"{unit}: {failed} ne repart pas avec la nouvelle image. Aucun retour arrière automatique : "
-               f"intervention manuelle. Images précédentes conservées : {before}. "
-               f"Pour revenir : `docker tag <image> <référence>` puis `docker compose up -d --no-deps <service>`."
-               + (f" Pas touchés : {', '.join(untouched)}." if untouched else ""))
-        self.log(msg)
-        self.notifier.send(f"ÉCHEC mise à jour : {unit}", msg[:1500], "error")
+        lines = [f"{failed} ne repart pas avec la nouvelle image. Aucun retour arrière automatique : intervention manuelle.",
+                 f"Images précédentes conservées : {before}.",
+                 "Pour revenir : `docker tag <image> <référence>` puis `docker compose up -d --no-deps <service>`."]
+        if untouched:
+            lines.append(f"Pas touchés : {', '.join(untouched)}.")
+        self.log(f"{unit}: " + " ".join(lines))
+        self.report.add("echec", failed if unit == failed else f"{unit} ({failed})", "\n".join(lines), "error")
         return False
 
     # -- cycles --------------------------------------------------------------
@@ -1345,19 +1512,17 @@ class Updater:
                 if e.status == "pending" and e.eligible and e.svc.mode == "notify":
                     rec = self.state.get(e.ref)
                     if rec and not rec.get("notified"):
-                        self.notifier.send(f"Nouvelle version prête : {e.svc.name}",
-                                           f"image {e.remote[7:19]} vue depuis {fmt_duration(int(self.now()) - e.first_seen)}."
-                                           f" Mise à jour manuelle : `docker-update now {e.svc.name} --yes`", "info")
+                        self.report.add_ready(e.svc.name, e.remote[7:19], fmt_duration(int(self.now()) - e.first_seen))
                         rec["notified"] = True
                         self.state.put(e.ref, rec)
             errs = {e.svc.name: e.detail for e in evals if e.status == "error"}
             fresh = {k: v for k, v in errs.items() if self.state.data["errors"].get(k) != v}
-            if fresh:
-                self.notifier.send("docker-update : erreurs de vérification",
-                                   "\n".join(f"{k}: {v}" for k, v in fresh.items())[:1500], "warn")
+            for k, v in fresh.items():
+                self.report.add("erreur", k, v, "warn")
             self.state.data["errors"] = errs
             horizon = int(self.now()) - 120 * 86400
             self.state.data["alerts"] = {k: v for k, v in self.state.data["alerts"].items() if v >= horizon}
+        self.flush()
         self.save_state()
         return 1 if failures else 0
 
@@ -1386,6 +1551,7 @@ class Updater:
         for unit, members in self.units(todo_all).items():
             if not self.apply(unit, members):
                 failures += 1
+        self.flush()
         self.save_state()
         return 1 if failures else 0
 
@@ -1403,18 +1569,6 @@ class Updater:
         self.save_state()
         self.log("en pause : " + (", ".join(holds) or "(rien)"))
         return 0
-
-    def heartbeat(self) -> None:
-        f = self.cfg.settings.heartbeat_url_file
-        if not f or self.run.dry_run:
-            return
-        try:
-            with open(f, encoding="utf-8") as fh:
-                url = fh.read().strip()
-        except OSError:
-            return
-        if url and not 200 <= self.http(url) < 400:
-            self.log("signal de vie non reçu par le service de surveillance")
 
     def status(self) -> None:
         if self.state.data["holds"]:
@@ -1467,6 +1621,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run")
     sub.add_parser("status")
     sub.add_parser("notify-test")
+    sub.add_parser("set-webhook", help="enregistre l'URL du webhook (saisie masquée ou entrée standard)")
     p_hold = sub.add_parser("hold")
     p_hold.add_argument("names", nargs="+")
     p_unhold = sub.add_parser("unhold")
@@ -1485,6 +1640,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_config(args.config)
         if args.cmd == "validate":
             return validate(cfg, log)
+        if args.cmd == "set-webhook":
+            return set_webhook(cfg, args.dry_run, log)
         lock = open(cfg.settings.lock_file, "w")
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1497,10 +1654,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "check":
             return up.cycle(apply=False)
         if args.cmd == "run":
-            rc = up.cycle(apply=True)
-            if rc == 0:
-                up.heartbeat()
-            return rc
+            return up.cycle(apply=True)
         if args.cmd == "now":
             return up.now_cmd(args.names, args.yes)
         if args.cmd == "notify-test":

@@ -372,5 +372,40 @@ release_notes_repos = ["acme/proxy"]
         self.assertEqual(self.du("validate").returncode, 2)
 
 
+class OneReport(ReleaseNotes):
+    def test_update_and_release_alert_arrive_in_a_single_post(self):
+        api = self.serve([self.rel("v3.6.3", "Fixes CVE-2026-12345")])
+        self.write_world(remote=2, old_version="3.6.2", new_version="3.6.3")
+        self.cfg_with(api, cooldown="0")
+        r = self.du("run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(len(self.posts), 1, "UN seul message pour le passage")
+        content = self.posts[0]["content"]
+        self.assertIn("1 mise à jour", content)
+        self.assertIn("Mises à jour réussies", content)
+        self.assertIn("Notes de release à lire", content)
+        self.assertIn("CVE-2026-12345", content)
+        self.assertNotIn("SECRET-TOKEN", r.stdout + r.stderr)
+        self.assertEqual(self.du("run").returncode, 0)
+        self.assertEqual(len(self.posts), 1, "rien de nouveau : aucun message")
+
+
+class SetWebhook(E2E):
+    URL = "https://discord.com/api/webhooks/123456789012345678/AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+
+    def test_set_webhook_through_stdin(self):
+        target = pathlib.Path(self.tmp.name) / "conf" / "discord_webhook"
+        self.write_cfg("0")
+        self.cfg.write_text(self.cfg.read_text().replace("settle_seconds = 0", f'settle_seconds = 0\nnotify_url_file = "{target}"'))
+        env = dict(os.environ, PATH=f"{SHIM}:{os.environ['PATH']}", SHIM_STATE=str(self.shim_state))
+        r = subprocess.run([sys.executable, "-I", str(SCRIPT), "--config", str(self.cfg), "--allow-untrusted-config", "set-webhook"],
+                           input=self.URL + "\n", capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(target.read_text(), self.URL + "\n")
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn("AbCdEfGh", r.stdout + r.stderr)
+        self.assertEqual(self.world().get("log", []), [], "aucune commande docker lancée")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

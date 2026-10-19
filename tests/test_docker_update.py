@@ -377,7 +377,9 @@ class TestCycle(Base):
         # tirage par digest exact, pas par étiquette
         self.assertEqual(self.cmds(["docker", "pull"]), [["docker", "pull", f"traefik@{dg(2)}"]])
         self.assertEqual(self.cmds(["docker", "tag"])[0], ["docker", "tag", f"traefik@{dg(2)}", "traefik:v3.6"])
-        self.assertTrue(any("Mise à jour réussie" in p[1]["content"] for p in self.posts))
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn("Mises à jour réussies", self.posts[0][1]["content"])
+        self.assertIn("traefik → " + dg(2)[7:19], self.posts[0][1]["content"])
 
     def test_order_of_operations(self):
         self.traefik()
@@ -461,7 +463,8 @@ class TestFailures(Base):
         self.assertEqual(self.cmds(["docker", "tag"]), [["docker", "tag", "traefik@" + dg(2), "traefik:v3.6"]])
         self.assertTrue(u.state.images["traefik:v3.6"]["failed"])
         msg = " ".join(p[1]["content"] for p in self.posts)
-        self.assertIn("ÉCHEC mise à jour", msg)
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn("Échecs de mise à jour", msg)
         self.assertIn("Aucun retour arrière automatique", msg)
         self.assertIn("id-traefik-old", msg, "l'image précédente est nommée pour un retour à la main")
 
@@ -544,7 +547,10 @@ class TestModesAndPolicies(Base):
         u.cycle(apply=True)
         self.assertEqual(len(self.posts), 1)
         self.assertEqual(self.world.ups, [])
-        self.assertIn("docker-update now traefik --yes", self.posts[0][1]["content"])
+        content = self.posts[0][1]["content"]
+        self.assertIn("Nouvelles versions prêtes", content)
+        self.assertIn("docker-update now <service> --yes", content)
+        self.assertRegex(content, r"traefik\s+" + dg(2)[7:19] + r"\s+1 j", "ligne du tableau : service, image, vue depuis")
 
     def test_manual_mode_is_silent(self):
         self.traefik()
@@ -1196,7 +1202,10 @@ class TestSecurity(Base):
         content = self.posts[0][1]["content"]
         self.assertEqual(self.posts[0][1]["allowed_mentions"], {"parse": []})
         self.assertLessEqual(len(content), du.DISCORD_MAX)
-        self.assertEqual(content.count("\n"), 1, "titre + une seule ligne de texte")
+        self.assertNotIn("@everyone", content)
+        self.assertNotIn("\n**URGENT**", content, "le résumé ne peut pas ouvrir de nouvelle ligne ni de mise en forme")
+        self.assertTrue(all(len(line) <= du.REPORT_LINE + 10 or line.startswith(("🚨", "⚠️", "ℹ️", "docker-update"))
+                            for line in content.split("\n")), "chaque ligne du rapport est bornée")
 
     def test_old_alerts_are_pruned(self):
         u = self.mk()
@@ -1274,7 +1283,8 @@ class TestSecurity(Base):
         self.clock.days(7 / 24)
         u.cycle(apply=True)
         self.assertEqual([s for s, _ in self.world.ups], ["migrate", "web"])
-        self.assertEqual(self.posted().count("Mise à jour réussie"), 1)
+        self.assertEqual(len(self.posts), 2, "détection (passage 1) puis mise à jour (passage 2) : un rapport par passage")
+        self.assertEqual(self.posted().count("Mises à jour réussies"), 1)
 
 
 class TestGithubGet(unittest.TestCase):
@@ -1393,26 +1403,6 @@ service = "a"
         with mock.patch("os.geteuid", return_value=0), mock.patch("os.stat", return_value=fake), \
                 mock.patch("sys.stdout", new=io.StringIO()):
             self.assertEqual(du.main(["--config", p, "validate"]), 2)
-
-    def test_heartbeat(self):
-        self.traefik()
-        hb = os.path.join(self.tmp.name, "hb")
-        with open(hb, "w") as f:
-            f.write("https://kuma.test/api/push/XYZ\n")
-        u = self.make([self.svc()], settings={"heartbeat_url_file": hb})
-        seen = []
-        u.http = lambda url: (seen.append(url), 200)[1]
-        u.heartbeat()
-        self.assertEqual(seen, ["https://kuma.test/api/push/XYZ"])
-        u.http = lambda url: 500
-        u.heartbeat()
-        self.assertIn("signal de vie non reçu", self.logtext())
-        self.assertNotIn("XYZ", self.logtext())
-        seen.clear()
-        u.run.dry_run = True
-        u.http = lambda url: (seen.append(url), 200)[1]
-        u.heartbeat()
-        self.assertEqual(seen, [], "pas de signal en simulation")
 
 
 # ── Veille des notes de release (alertes seulement) ─────────────────────────
@@ -1637,18 +1627,20 @@ class TestReleaseNotes(Base):
         self.releases(release(self.clock, "v3.7.14", "CVE-2026-1111"), release(self.clock, "v3.7.15", "CVE-2026-2222"))
         u = self.mk()
         u.cycle(apply=True)
-        self.assertEqual(len(self.posts), 2)
+        self.assertEqual(len(self.posts), 1, "un seul rapport")
+        self.assertEqual(self.posted().count("Notes de release à lire"), 2, "une entrée par release")
         u.cycle(apply=True)
-        self.assertEqual(len(self.posts), 2, "pas de répétition")
+        self.assertEqual(len(self.posts), 1, "pas de répétition")
         self.clock.days(1)
         self.mk().cycle(apply=True)                    # nouveau processus : l'état disque dédoublonne
-        self.assertEqual(len(self.posts), 2)
+        self.assertEqual(len(self.posts), 1)
         self.releases(release(self.clock, "v3.7.16", "CVE-2026-3333"), release(self.clock, "v3.7.15", "CVE-2026-2222"),
                       release(self.clock, "v3.7.14", "CVE-2026-1111"), etag="e2")
         self.clock.days(1)
         self.mk().cycle(apply=True)
-        self.assertEqual(len(self.posts), 3, "seule la nouvelle release est signalée")
-        self.assertIn("v3.7.16", self.posts[2][1]["content"])
+        self.assertEqual(len(self.posts), 2, "seule la nouvelle release est signalée")
+        self.assertIn("v3.7.16", self.posts[1][1]["content"])
+        self.assertNotIn("v3.7.15", self.posts[1][1]["content"])
 
     def test_dedup_key_is_per_service(self):
         self.world.add("traefik2", "/stack/t2", "traefik2", "traefik:v3.6", 1, version="v3.7.13")
@@ -1656,7 +1648,8 @@ class TestReleaseNotes(Base):
         svcs = [self.svc(release_notes=True, release_notes_repos=["traefik/traefik"]),
                 self.svc("traefik2", "/stack/t2", release_notes=True, release_notes_repos=["traefik/traefik"])]
         self.make(svcs).cycle(apply=True)
-        self.assertEqual(len(self.posts), 2)
+        self.assertEqual(len(self.posts), 1)
+        self.assertEqual(self.posts[0][1]["content"].count("Notes de release à lire"), 2, "une entrée par service")
         self.assertEqual(len(self.gh_calls), 1, "un seul appel pour un dépôt partagé")
 
     def test_drafts_and_prereleases_are_ignored(self):
@@ -1774,8 +1767,8 @@ class TestReleaseNotes(Base):
         self.assertNotIn("\x1b", p["content"] + self.logtext())
         self.assertNotIn("evil.example", p["content"] + self.logtext(), "le lien est reconstruit, jamais copié")
         self.assertEqual(p["content"].count("Extrait"), 1)
-        extrait = next(l for l in p["content"].split("\n") if l.startswith("Extrait"))
-        self.assertLessEqual(len(extrait), 200)
+        extrait = next(l for l in p["content"].split("\n") if l.strip().startswith("Extrait"))
+        self.assertLessEqual(len(extrait), du.REPORT_LINE + 10)
 
     def test_check_logs_but_sends_nothing(self):
         self.releases(release(self.clock, "v3.7.14", "Fixes CVE-2026-1111"))
@@ -2215,13 +2208,15 @@ class TestAdvisoriesAndReleaseNotesTogether(Base):
     def test_a_release_with_more_than_the_advisory_still_alerts_for_the_rest(self):
         self.notes(release(self.clock, "v3.7.14", f"Fixes {self.GHSA} and CVE-2026-99999"))
         self.mk().cycle(apply=True)
-        self.assertEqual(len(self.posts), 2)
-        rel = next(p[1]["content"] for p in self.posts if "Notes de release à lire" in p[1]["content"])
+        self.assertEqual(len(self.posts), 1, "avis et note dans le même rapport")
+        content = self.posts[0][1]["content"]
+        self.assertIn("VULNÉRABLE", content)
+        rel = content.split("Notes de release à lire")[1]
         self.assertIn("CVE-2026-99999", rel)
         self.assertNotIn(f"Motifs : {self.GHSA}", rel)
         self.assertNotRegex(rel.split("Extrait")[0], self.GHSA)
         self.assertIn(f"Déjà couvert par l'avis : {self.GHSA}", rel)
-        self.assertIn(self.LINK, next(p[1]["content"] for p in self.posts if "VULNÉRABLE" in p[1]["content"]))
+        self.assertIn(self.LINK, content.split("Notes de release à lire")[0], "le lien complète l'alerte de l'avis")
 
     def test_weak_signal_in_a_fully_covered_release_is_not_reported(self):
         self.notes(release(self.clock, "v3.7.14", f"Better security. Fixes {self.GHSA}"))
@@ -2265,9 +2260,12 @@ class TestAdvisoriesAndReleaseNotesTogether(Base):
         self.notes(release(self.clock, "v3.7.14", f"Fixes {self.GHSA}"))
         u = self.mk(svc={"mode": "auto", "security_cooldown": "0", "cooldown": "30d"})
         u.cycle(apply=True)
-        self.assertEqual(len(self.posts) - 1, 1, "détection + mise à jour réussie, jamais de seconde alerte pour la note")
-        self.assertIn("Correctif de sécurité détecté", self.posts[0][1]["content"])
-        self.assertIn(self.LINK, self.posts[0][1]["content"])
+        self.assertEqual(len(self.posts), 1, "détection + mise à jour réussie dans le même rapport")
+        content = self.posts[0][1]["content"]
+        self.assertIn("Correctif de sécurité détecté", content)
+        self.assertIn("Mises à jour réussies", content)
+        self.assertIn(self.LINK, content)
+        self.assertNotIn("Notes de release à lire", content, "jamais de seconde entrée pour la note")
         self.assertEqual(len(self.world.ups), 1, "accélérée par l'AVIS, pas par la note")
 
     def test_release_alone_accelerates_nothing_even_when_the_advisory_exists_elsewhere(self):
@@ -2294,6 +2292,319 @@ class TestAdvisoriesAndReleaseNotesTogether(Base):
         self.mk().cycle(apply=False)
         self.assertEqual(self.posts, [])
         self.assertIn("ne cite que l'avis", self.logtext())
+
+
+# ── Rapport : un seul message par passage ───────────────────────────────────
+
+class TestReport(unittest.TestCase):
+    def full(self):
+        r = du.Report()
+        r.add("maj", "homepage → a1b2c3d4e5f6", "", "ok")
+        r.add("notes", "Notes de release à lire : portainer 2.44.0 → 2.45.1", "Motifs : CVE-2026-1111\nLien : https://x", "warn")
+        r.add("echec", "tirelire (web)", "web ne repart pas\nPas touchés : admin", "error")
+        r.add("secu", "Correctif de sécurité détecté : traefik", "GHSA-2222-3333-4444 corrigé dans 3.7.14", "warn")
+        r.add_ready("immich", "3f9a2b1c0d4e", "2 j")
+        r.add_ready("wg-easy", "0123456789ab", "1 j")
+        return r
+
+    def test_empty(self):
+        r = du.Report()
+        self.assertTrue(r.empty())
+        self.assertEqual((r.counts(), r.level()), ({}, "info"))
+        r.add_ready("a", "b", "c")
+        self.assertFalse(r.empty())
+
+    def test_title_counts_with_plurals(self):
+        t = self.full().title()
+        self.assertEqual(t, "docker-update : 1 échec · 1 alerte de sécurité · 1 note de release · 1 mise à jour · 2 versions prêtes")
+        r = du.Report()
+        r.add("echec", "x", "", "error")
+        r.add("echec", "y", "", "error")
+        self.assertEqual(r.title(), "docker-update : 2 échecs")
+
+    def test_level_is_the_worst_one(self):
+        r = du.Report()
+        r.add_ready("a", "b", "c")
+        self.assertEqual(r.level(), "info")
+        r.add("maj", "m", "", "ok")
+        self.assertEqual(r.level(), "ok")
+        r.add("notes", "n", "", "warn")
+        self.assertEqual(r.level(), "warn")
+        r.add("echec", "e", "", "error")
+        self.assertEqual(r.level(), "error")
+
+    def test_sections_come_in_order_of_importance(self):
+        text = self.full().render()
+        order = [text.index(h) for h in ("Échecs de mise à jour", "Sécurité (avis)", "Notes de release (alertes seulement",
+                                          "Mises à jour réussies", "Nouvelles versions prêtes")]
+        self.assertEqual(order, sorted(order))
+
+    def test_ready_versions_are_a_table(self):
+        text = self.full().render()
+        self.assertIn("```\nservice  image         vue depuis\nimmich   3f9a2b1c0d4e  2 j\nwg-easy  0123456789ab  1 j\n```", text)
+        plain = self.full().render(fence=False)
+        self.assertNotIn("```", plain)
+        self.assertNotIn("**", plain)
+        self.assertIn("immich   3f9a2b1c0d4e  2 j", plain)
+
+    def test_an_item_shows_its_first_lines_only_and_bounded(self):
+        r = du.Report()
+        r.add("secu", "t", "\n".join(f"ligne {i} " + "x" * 500 for i in range(20)))
+        text = r.render()
+        self.assertEqual(text.count("ligne "), du.REPORT_LINES)
+        self.assertTrue(all(len(line) <= du.REPORT_LINE + 10 for line in text.split("\n")))
+
+    def test_no_mention_and_no_control_characters(self):
+        r = du.Report()
+        r.add("secu", "@everyone <@&1> \x1b[31m", "texte @here\x00\n@everyone", "warn")
+        text = r.render()
+        for bad in ("@everyone", "@here", "<@&", "\x1b", "\x00"):
+            self.assertNotIn(bad, text)
+
+    def test_the_budget_is_respected_and_the_important_part_survives(self):
+        r = du.Report()
+        r.add("echec", "tirelire", "ne repart pas", "error")
+        for i in range(80):
+            r.add("info", f"info {i}", "détail " * 20)
+            r.add_ready(f"app-{i:02d}", "0123456789ab", "1 j")
+        text = r.render()
+        self.assertLessEqual(len(text), du.REPORT_BUDGET + 120)
+        self.assertIn("Échecs de mise à jour", text)
+        self.assertRegex(text, r"… \d+ élément\(s\) non affiché\(s\)")
+        self.assertIn("```\nservice", text)
+        self.assertEqual(text.count("```") % 2, 0, "le tableau est toujours refermé")
+
+    def test_a_huge_table_is_cut_by_rows_not_by_characters(self):
+        r = du.Report()
+        for i in range(300):
+            r.add_ready(f"application-numero-{i}", "0123456789ab", "12 j")
+        text = r.render()
+        self.assertLessEqual(len(text), du.REPORT_BUDGET + 120)
+        self.assertTrue(text.rstrip().splitlines()[-1].startswith("… "), "le nombre de lignes cachées est indiqué")
+        self.assertTrue(all(line.startswith("application") or not line.strip() or line[0] in "`📦s…"
+                            for line in text.splitlines()), "aucune ligne de tableau coupée")
+
+
+class TestReportDelivery(Base):
+    """Beaucoup d'applications suivies : UN message par passage, jamais un par événement."""
+
+    def apps(self, n_auto=3, n_ready=6):
+        svcs = []
+        for i in range(n_auto):
+            name = f"auto{i}"
+            self.world.add(name, f"/stack/{name}", name, f"img/{name}:1", 1)
+            self.world.registry[f"img/{name}:1"] = manifest(2)
+            svcs.append(self.svc(name, f"/stack/{name}", cooldown="0"))
+        self.world.add("casse", "/stack/casse", "casse", "img/casse:1", 1)
+        self.world.registry["img/casse:1"] = manifest(3)
+        self.world.fail_up.add("id-" + dg(3)[7:19])
+        svcs.append(self.svc("casse", "/stack/casse", cooldown="0"))
+        for i in range(n_ready):
+            name = f"pret{i}"
+            self.world.add(name, f"/stack/{name}", name, f"img/{name}:1", 1)
+            self.world.registry[f"img/{name}:1"] = manifest(2)
+            svcs.append(self.svc(name, f"/stack/{name}", mode="notify", cooldown="0"))
+        return svcs
+
+    def test_one_message_for_the_whole_pass(self):
+        u = self.make(self.apps())
+        self.assertEqual(u.cycle(apply=True), 1)
+        self.assertEqual(len(self.posts), 1)
+        c = self.posts[0][1]["content"]
+        self.assertTrue(c.startswith("🚨 **docker-update : 1 échec · 3 mises à jour · 6 versions prêtes**"), c[:120])
+        self.assertLess(c.index("Échecs de mise à jour"), c.index("Mises à jour réussies"))
+        self.assertLess(c.index("Mises à jour réussies"), c.index("Nouvelles versions prêtes"))
+        for name in ("auto0", "auto1", "auto2", "casse", "pret0", "pret5"):
+            self.assertIn(name, c)
+        self.assertLessEqual(len(c), du.DISCORD_MAX)
+
+    def test_security_alerts_and_updates_share_the_same_message(self):
+        svcs = self.apps(n_auto=1, n_ready=1)
+        for name, repo in (("vuln1", "org/one"), ("vuln2", "org/two")):
+            self.world.add(name, f"/stack/{name}", name, f"img/{name}:1", 1, version="1.0.0")
+            self.gh[repo] = (200, [advisory(self.clock, rng="< 2.0.0")], "e")
+            svcs.append(self.svc(name, f"/stack/{name}", advisories=[repo]))
+        self.make(svcs).cycle(apply=True)
+        self.assertEqual(len(self.posts), 1, self.logtext())
+        c = self.posts[0][1]["content"]
+        self.assertEqual(c.count("VULNÉRABLE"), 2)
+        for section in ("Sécurité (avis)", "Mises à jour réussies", "Nouvelles versions prêtes"):
+            self.assertIn(section, c)
+
+    def test_nothing_new_means_no_message(self):
+        u = self.make(self.apps())
+        u.cycle(apply=True)
+        self.posts.clear()
+        self.assertEqual(u.cycle(apply=True), 0, "le digest en échec n'est pas retenté")
+        self.assertEqual(self.posts, [], "rien de nouveau : silence")
+
+    def test_all_up_to_date_means_no_message(self):
+        self.traefik()
+        self.make([self.svc()]).cycle(apply=True)
+        self.assertEqual(self.posts, [])
+
+    def test_check_sends_nothing(self):
+        u = self.make(self.apps())
+        u.cycle(apply=False)
+        self.assertEqual(self.posts, [])
+
+    def test_now_sends_its_own_single_report(self):
+        svcs = self.apps(n_auto=2, n_ready=0)[:2]
+        u = self.make(svcs, settings={"default_cooldown": "30d"})
+        self.assertEqual(u.now_cmd(["auto0", "auto1"], yes=True), 0)
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn("2 mises à jour", self.posts[0][1]["content"])
+
+    def test_report_level_is_the_worst_event(self):
+        u = self.make(self.apps(n_auto=1, n_ready=1)[:1])
+        u.cycle(apply=True)
+        self.assertTrue(self.posts[0][1]["content"].startswith("✅"), "seulement une réussite : niveau ok")
+
+    def test_ntfy_and_json_formats_get_the_same_single_report(self):
+        for fmt in ("ntfy", "json"):
+            with self.subTest(fmt=fmt):
+                self.setUp()
+                u = self.make(self.apps(n_auto=1, n_ready=2), fmt=fmt)
+                u.cycle(apply=True)
+                self.assertEqual(len(self.posts), 1)
+                body = self.posts[0][1] if fmt == "json" else self.posts[0][1].decode()
+                text = body["text"] if fmt == "json" else body
+                self.assertNotIn("```", text, "pas de balises Discord hors Discord")
+                self.assertIn("pret1", text)
+
+    def test_reports_do_not_pile_up_between_passes(self):
+        u = self.make(self.apps(n_auto=1, n_ready=0)[:1])
+        u.cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+        self.assertTrue(u.report.empty())
+
+    def test_notification_failure_does_not_break_the_pass(self):
+        u = self.make(self.apps(n_auto=1, n_ready=0)[:1])
+
+        def boom(url, data, headers):
+            raise OSError("réseau coupé")
+
+        u.notifier._post = boom
+        self.assertEqual(u.cycle(apply=True), 0)
+        self.assertIn("notification non envoyée", self.logtext())
+
+
+# ── Enregistrer l'URL du webhook dans l'outil ───────────────────────────────
+
+class TestSetWebhook(Base):
+    URL = "https://discord.com/api/webhooks/123456789012345678/AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcDEF"
+
+    def cfg(self, fmt="discord", target=None):
+        path = os.path.join(self.tmp.name, "updates.toml")
+        self.target = target if target is not None else os.path.join(self.tmp.name, "etc", "discord_webhook")
+        line = f'notify_url_file = "{self.target}"' if self.target else ""
+        with open(path, "w") as f:
+            f.write(f'[settings]\nstate_file = "{self.state_path}"\nnotify_format = "{fmt}"\n{line}\n'
+                    f'[[service]]\nname = "a"\ncompose_dir = "{self.tmp.name}"\nservice = "a"\n')
+        return path
+
+    def run_cmd(self, path, stdin, *extra):
+        out = io.StringIO()
+        with mock.patch("sys.stdin", new=io.StringIO(stdin)), mock.patch("sys.stdout", new=out):
+            rc = du.main(["--config", path, "--allow-untrusted-config", *extra, "set-webhook"])
+        return rc, out.getvalue()
+
+    def test_url_is_written_with_600_and_never_printed(self):
+        rc, out = self.run_cmd(self.cfg(), self.URL + "\n")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(open(self.target).read(), self.URL + "\n")
+        self.assertEqual(os.stat(self.target).st_mode & 0o777, 0o600)
+        self.assertNotIn("AbCdEfGh", out)
+        self.assertNotIn("123456789012345678", out)
+        self.assertIn("notify-test", out)
+        self.assertEqual(os.listdir(os.path.dirname(self.target)), ["discord_webhook"], "aucun fichier temporaire")
+
+    def test_the_new_url_is_the_one_used_for_notifications(self):
+        self.run_cmd(self.cfg(), self.URL)
+        n = du.Notifier(self.target, "discord", post=lambda u, b, h: self.posts.append((u, json.loads(b), h)))
+        n.send("t", "x")
+        self.assertEqual(self.posts[0][0], self.URL)
+
+    def test_an_existing_file_is_replaced_and_its_rights_fixed(self):
+        path = self.cfg()
+        os.makedirs(os.path.dirname(self.target))
+        with open(self.target, "w") as f:
+            f.write("https://discord.com/api/webhooks/1/ancienne\n")
+        os.chmod(self.target, 0o644)
+        self.assertEqual(self.run_cmd(path, self.URL)[0], 0)
+        self.assertEqual(open(self.target).read(), self.URL + "\n")
+        self.assertEqual(os.stat(self.target).st_mode & 0o777, 0o600)
+
+    def test_invalid_urls_are_refused_without_echoing_them(self):
+        bad = ["", "\n", "pas une url", "http://discord.com/api/webhooks/123456789012345678/AbCdEfGhIjKlMnOpQrStUv",
+               "https://evil.example/api/webhooks/123456789012345678/AbCdEfGhIjKlMnOpQrStUvWxYz",
+               "https://discord.com/api/webhooks/abc/AbCdEfGhIjKlMnOpQrStUvWxYz",
+               "https://discord.com/api/webhooks/123456789012345678/court",
+               "https://discord.com.evil.example/api/webhooks/123456789012345678/AbCdEfGhIjKlMnOpQrStUvWxYz",
+               "https://discord.com/api/webhooks/123456789012345678/AbCdEfGhIjKlMnOpQrStUvWxYz espace",
+               "https://discord.com/api/webhooks/123456789012345678/" + "A" * 400]
+        path = self.cfg()
+        for url in bad:
+            with self.subTest(url=url[:40]):
+                rc, out = self.run_cmd(path, url + "\n")
+                self.assertEqual(rc, 2, out)
+                self.assertFalse(os.path.exists(self.target), "rien n'est écrit")
+                self.assertNotIn("AbCdEfGh", out)
+
+    def test_discord_variants_are_accepted(self):
+        for host in ("discord.com", "discordapp.com", "ptb.discord.com", "canary.discord.com"):
+            with self.subTest(host=host):
+                url = f"https://{host}/api/v10/webhooks/123456789012345678/AbCdEfGhIjKlMnOpQrStUvWxYz0123"
+                self.assertEqual(self.run_cmd(self.cfg(), url)[0], 0)
+
+    def test_only_the_first_line_is_read(self):
+        self.assertEqual(self.run_cmd(self.cfg(), self.URL + "\nautre chose\n")[0], 0)
+        self.assertEqual(open(self.target).read(), self.URL + "\n")
+
+    def test_other_formats_accept_any_http_url(self):
+        self.assertEqual(self.run_cmd(self.cfg("ntfy"), "https://ntfy.example/mon-sujet")[0], 0)
+        self.assertEqual(self.run_cmd(self.cfg("json"), "not a url")[0], 2)
+
+    def test_a_target_file_is_required(self):
+        rc, out = self.run_cmd(self.cfg(target=""), self.URL)
+        self.assertEqual(rc, 2)
+        self.assertIn("notify_url_file", out)
+
+    def test_dry_run_writes_nothing(self):
+        rc, out = self.run_cmd(self.cfg(), self.URL, "--dry-run")
+        self.assertEqual(rc, 0)
+        self.assertFalse(os.path.exists(self.target))
+        self.assertIn("[simulation]", out)
+        self.assertNotIn("AbCdEfGh", out)
+
+    def test_interactive_input_is_hidden(self):
+        path = self.cfg()
+        out = io.StringIO()
+        fake = mock.Mock()
+        fake.isatty.return_value = True
+        with mock.patch("sys.stdin", new=fake), mock.patch("sys.stdout", new=out), \
+                mock.patch("getpass.getpass", return_value=self.URL) as gp:
+            rc = du.main(["--config", path, "--allow-untrusted-config", "set-webhook"])
+        self.assertEqual(rc, 0)
+        gp.assert_called_once()
+        self.assertIn("invisible", gp.call_args[0][0])
+        fake.readline.assert_not_called()
+        self.assertEqual(open(self.target).read(), self.URL + "\n")
+
+    def test_the_url_is_never_a_command_line_argument(self):
+        with mock.patch("sys.stdin", new=io.StringIO("")), mock.patch("sys.stdout", new=io.StringIO()), \
+                mock.patch("sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit):
+                du.main(["--config", self.cfg(), "--allow-untrusted-config", "set-webhook", self.URL])
+
+    def test_removed_keys_are_explained(self):
+        for key in ("heartbeat_url_file", "rollback", "pre_hook"):
+            with self.subTest(key=key):
+                data = {"settings": {key: "x"}} if key == "heartbeat_url_file" else \
+                    {"service": [{"name": "a", "compose_dir": "/x", "service": "a", key: "x"}]}
+                with self.assertRaises(du.ConfigError) as cm:
+                    du.parse_config(data)
+                self.assertIn("n'existe plus", str(cm.exception))
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ Condition d'arrêt générale : tout comportement qui ressemble à un danger pou
 | `examples/updates.example.toml` | configuration d'exemple (placeholders à remplacer) |
 | `examples/updates.watchtower.toml` | les applications suivies par Watchtower, toutes en `notify` (placeholders à remplacer) |
 | `deploy/docker-update.service`, `.timer` | unités `systemd` (le service démarre en mode **`check`**, qui n'applique rien) |
-| `tests/` | 201 tests (`python3 -m unittest discover -s tests`) |
+| `tests/` | 252 tests (`python3 -m unittest discover -s tests`) |
 
 Lis d'abord `README.md` (fonctionnement, sous-commandes, modèle de menace, limites connues).
 
@@ -44,7 +44,7 @@ Teste l'outil lui-même sans rien installer, depuis le dépôt cloné :
 ```sh
 python3 -m unittest discover -s tests 2>&1 | tail -5
 ```
-**Attendu : « OK », 201 tests.** Les tests ne créent que des fichiers temporaires et un serveur HTTP local sur `127.0.0.1`.
+**Attendu : « OK », 252 tests.** Les tests ne créent que des fichiers temporaires et un serveur HTTP local sur `127.0.0.1`.
 Si un test échoue, ne continue pas : donne la sortie.
 
 Vérifie que la lecture du digest distant fonctionne **depuis ce serveur** (c'est la commande exacte que l'outil utilise) :
@@ -107,12 +107,13 @@ Le dossier d'état et le dossier des identifiants du registre :
 sudo install -d -m 700 -o root -g root /var/lib/docker-update /var/lib/docker-update/docker
 ```
 
-Webhook Discord : l'utilisateur te donne l'URL. Écris-la dans un fichier `600` **sans l'afficher** :
+Webhook Discord : **c'est l'utilisateur qui saisit l'URL, dans son propre terminal** ; tu ne la vois jamais. Demande-lui de lancer
+(la saisie est masquée ; l'outil valide l'adresse, écrit le fichier en `600` et n'affiche rien) :
 
 ```sh
-sudo install -m 600 -o root -g root /dev/null /etc/docker-update/discord_webhook
-# puis le contenu : une seule ligne, l'URL (via sudoedit ou `read -rs` ; jamais dans l'historique du shell ni dans un message)
+sudo /usr/local/sbin/docker-update --config /etc/docker-update/updates.toml set-webhook
 ```
+L'URL n'est jamais un argument de ligne de commande (historique du shell, `ps`). Pour la changer plus tard, relancer la même commande.
 
 Identifiants du registre : **seulement si** l'image de la tirelire sur GHCR est privée. Demande à l'utilisateur de créer un jeton
 **nouveau**, avec la seule permission `read:packages`, jamais le jeton déjà utilisé par Watchtower :
@@ -222,13 +223,18 @@ sudo docker-update --config /etc/docker-update/updates.toml --dry-run run       
 ```
 Conseil : un alias `du='sudo env DOCKER_CONFIG=/var/lib/docker-update/docker docker-update --config /etc/docker-update/updates.toml'`.
 
-**Quand Discord annonce « Correctif de sécurité détecté »** : rien à faire, l'outil applique après `security_cooldown` (6 h) ; si c'est
-critique, la fenêtre horaire est ignorée. **Quand Discord annonce « VULNÉRABLE »** : aucune image corrigée n'est encore publiée ; surveiller.
-**Quand Discord annonce « Notes de release à lire »** : une release plus récente que la version en cours mentionne un motif de
+**Le rapport Discord.** Un passage qui a quelque chose à dire envoie UN seul message, sections par importance : 🚨 échecs de mise
+à jour, ⚠️ sécurité (avis), 📝 notes de release, ⚠️ erreurs de vérification, ✅ mises à jour réussies, 📦 nouvelles versions prêtes
+(tableau service / image / depuis quand), ℹ️ infos. Rien de nouveau : aucun message. Un tableau ou une liste trop long est coupé
+avec « … N élément(s) non affiché(s) » (le détail est dans `journalctl -u docker-update`).
+
+**Quand le rapport contient « Correctif de sécurité détecté »** : rien à faire, l'outil applique après `security_cooldown` (6 h) ; si c'est
+critique, la fenêtre horaire est ignorée. **Quand il contient « VULNÉRABLE »** : aucune image corrigée n'est encore publiée ; surveiller.
+**Quand il contient « Notes de release à lire »** : une release plus récente que la version en cours mentionne un motif de
 sécurité (CVE, GHSA, « security fix »…). C'est une alerte seulement : rien n'est accéléré. L'utilisateur lit la note (lien dans le
 message) et décide, puis `now <service> --yes`. Un message « mot *security* » (info) est un signal faible, sans CVE annoncé.
-**Quand Discord annonce « Impossible de comparer »** : la version en cours n'est pas lisible, aucune note n'est analysée pour ce service.
-**Quand Discord annonce « plage de versions illisible » ou « version … pas lisible »** : l'outil n'a pas pu conclure, à l'utilisateur de juger,
+**Quand il contient « Impossible de comparer »** : la version en cours n'est pas lisible, aucune note n'est analysée pour ce service.
+**Quand il contient « plage de versions illisible » ou « version … pas lisible »** : l'outil n'a pas pu conclure, à l'utilisateur de juger,
 puis `now <service> --yes` s'il décide d'appliquer.
 
 ## 10. Retour arrière de tout le dispositif
