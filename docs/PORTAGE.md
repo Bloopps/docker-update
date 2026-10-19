@@ -333,6 +333,14 @@ Mutation manuelle de la phase 4 (34 défauts introduits à la main dans `interna
 change rien, car `cycle` exclut déjà les digests en échec avant d'appliquer ; la garde est redondante (et `describe` / `statusRow` testent
 `FailedBefore` en premier). La campagne complète est la phase 6 (mission §6.4).
 
+Mutation manuelle de la phase 6 (23 défauts de plus, un à la fois, `go test ./...` relancé à chaque fois, source restaurée ensuite) :
+**23 détectés d'emblée, aucun survivant.** Couvre le budget du rapport, `@` non neutralisé, mentions Discord autorisées, droits 600 du
+fichier webhook, hôte du webhook et URL générique non validés, URL du webhook et jeton GitHub journalisés, message Discord non borné,
+signal faible pris pour fort, dédoublonnage des alertes (fortes et faibles) supprimé, nettoyage forcé (`-f`) ou après un échec, échec non
+mémorisé, sélection `check NOM` ignorée (noms et groupes), bornes des motifs, `release_notes_ignore` ignoré, pré-version et brouillon non
+ignorés, et une note de release qui accélère la mise à jour. Total Go : 57 défauts introduits (phases 4 et 6), tous détectés après les 2
+tests ajoutés, plus 1 équivalent documenté. Rejouer : voir `docs/PORTAGE.md` ci-dessus (copier le dépôt, un défaut à la fois) ; les scripts ne sont pas versionnés.
+
 ## 4 bis. Décisions du propriétaire en cours de route
 
 - **`init` vérifie l'installation** (demande du propriétaire, phase 7) : avant toute question, `init` contrôle en lecture seule Docker,
