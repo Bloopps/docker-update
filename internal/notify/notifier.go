@@ -93,7 +93,8 @@ func ErrorKind(err error) string {
 	return name
 }
 
-func (n *Notifier) url() string {
+// URL lit l'URL du webhook dans son fichier ; vide si le fichier est absent ou illisible.
+func (n *Notifier) URL() string {
 	if n.URLFile == "" {
 		return ""
 	}
@@ -144,7 +145,7 @@ func (n *Notifier) Send(title, text, level string) {
 		n.Log("[simulation] notification : " + title)
 		return
 	}
-	url := n.url()
+	url := n.URL()
 	if url == "" {
 		return
 	}
