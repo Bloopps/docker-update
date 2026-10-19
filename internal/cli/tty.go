@@ -40,7 +40,7 @@ func readHidden(f *os.File, out io.Writer, prompt string) (string, error) {
 	if err := ioctl(fd, syscall.TCSETS, unsafe.Pointer(&silent)); err != nil {
 		return "", errors.New("saisie masquée impossible")
 	}
-	restore := func() { ioctl(fd, syscall.TCSETS, unsafe.Pointer(&old)) }
+	restore := func() { _ = ioctl(fd, syscall.TCSETS, unsafe.Pointer(&old)) } // au mieux : le terminal peut avoir disparu
 	defer restore()
 
 	sig := make(chan os.Signal, 1)

@@ -243,11 +243,11 @@ func applyEdit(env *Env, g globals, p *prompter, yes bool, oldData, newData []by
 		return 0, fmt.Errorf("sauvegarde impossible, rien n'est écrit : %w", err)
 	}
 	if err := writeLike(g.config, newData, info); err != nil {
-		return 0, fmt.Errorf("écriture impossible (l'ancien fichier est intact) : %v", err)
+		return 0, fmt.Errorf("écriture impossible (l'ancien fichier est intact) : %w", err)
 	}
 	if _, err := env.Load(g.config); err != nil {
 		if rerr := writeLike(g.config, oldData, info); rerr != nil {
-			return 0, fmt.Errorf("fichier écrit invalide et ancien fichier non remis : %v ; copie : %s", rerr, backup)
+			return 0, fmt.Errorf("fichier écrit invalide et ancien fichier non remis : %w ; copie : %s", rerr, backup)
 		}
 		log("annulé : le fichier relu est invalide, l'ancien est remis en place : " + err.Error())
 		return 1, nil

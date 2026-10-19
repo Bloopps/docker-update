@@ -214,7 +214,7 @@ func initCmd(env *Env, g globals, sub subArgs, log func(string)) (int, error) {
 		return 1, nil
 	}
 	if err := writeNew(g.config, []byte(text)); err != nil {
-		return 0, fmt.Errorf("écriture impossible : %v", err)
+		return 0, fmt.Errorf("écriture impossible : %w", err)
 	}
 	if _, err := env.Load(g.config); err != nil {
 		os.Remove(g.config)
