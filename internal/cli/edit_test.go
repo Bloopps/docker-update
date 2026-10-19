@@ -448,7 +448,8 @@ func TestEditCommandsRefuseWhileAPassIsRunning(t *testing.T) {
 
 func TestEditRefusesAnInvalidOrWindowsFile(t *testing.T) {
 	r := newEditRig(t)
-	if err := os.WriteFile(r.cfg, []byte("[settings]\r\n"), 0o600); err != nil {
+	// le verrou est dans le dossier du test : le défaut (/run) n'est pas accessible en écriture hors root
+	if err := os.WriteFile(r.cfg, []byte("[settings]\r\nlock_file = \""+filepath.Join(r.dir, "lock")+"\"\r\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if code := r.run("add", "x", "--compose-dir", "/x", "--service", "x", "--yes"); code != 2 {
