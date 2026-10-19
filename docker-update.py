@@ -64,6 +64,7 @@ MAX_MANIFEST = 4 << 20
 MAX_API_BODY = 2 << 20
 MAX_RELEASES_BODY = 8 << 20
 RELEASES_FIRST, RELEASES_NEXT = 30, 10      # releases demandées à la 1re synchronisation, puis aux passages suivants
+RELEASE_LABEL = "ALERTE notes de release"
 RELEASES_RESYNC = 7 * 86400                 # sans synchronisation complète depuis ce délai : on relit les 30
 SEVERITIES = ("low", "medium", "high", "critical")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -742,6 +743,7 @@ class Updater:
         self.http, self.minutes, self.persist = http, minutes, persist
         self.gh_get = gh_get
         self.alerts_on = False
+        self._notes: dict[str, dict[str, tuple[str, str]]] = {}     # service -> {avis cité (minuscules): (release, lien)}
 
     def held(self, svc: Service) -> bool:
         holds = self.state.data["holds"]
@@ -992,18 +994,35 @@ class Updater:
             alerts[k] = int(self.now())
         self.notifier.send(title, text, level)
 
+    def _recent_advisories(self, svc: Service) -> list[dict]:
+        """Avis récents, non retirés, de sévérité suffisante, pour les dépôts `advisories` du service."""
+        now = int(self.now())
+        items: list[dict] = []
+        for repo in svc.advisories:
+            items += self.advisories(repo)
+        return [a for a in items if not a["withdrawn"] and now - a["pub"] <= self.cfg.settings.advisory_lookback
+                and sev_rank(a["sev"]) >= sev_rank(svc.min_severity)]
+
+    def _notes_line(self, svc: Service, advisories: list[dict]) -> str:
+        """Complète une alerte d'avis avec la release dont la note cite le même avis (GHSA ou CVE), s'il y en a une."""
+        index = self._notes.get(svc.name) or {}
+        found = []
+        for a in advisories:
+            for key in (a["id"], a["cve"]):
+                if key and key.lower() in index:
+                    found.append(index[key.lower()])
+                    break
+        if not found:
+            return ""
+        return " Notes de release qui le citent : " + ", ".join(f"{t} {u}" for t, u in list(dict.fromkeys(found))[:3]) + "."
+
     def security_pass(self, evals: list[Eval], allow_pull: bool) -> None:
         now = int(self.now())
-        lookback = self.cfg.settings.advisory_lookback
         for e in evals:
             svc = e.svc
             if not svc.advisories or e.status not in ("pending", "uptodate") or not e.old_image_id:
                 continue
-            items: list[dict] = []
-            for repo in svc.advisories:
-                items += self.advisories(repo)
-            recent = [a for a in items if not a["withdrawn"] and now - a["pub"] <= lookback
-                      and sev_rank(a["sev"]) >= sev_rank(svc.min_severity)]
+            recent = self._recent_advisories(svc)
             if not recent:
                 continue
             current = self._version_of(e.old_image_id)
@@ -1011,20 +1030,21 @@ class Updater:
                 a = recent[0]
                 self.alert(f"inconnue:{svc.name}:{a['id']}", f"Avis de sécurité récent : {svc.name}",
                            f"{a['id']} ({a['sev'] or 'sévérité ?'}) {a['summary']}. Impossible de savoir si la version en cours "
-                           f"est touchée (étiquette de version absente de l'image). Vérifiez à la main.")
+                           f"est touchée (étiquette de version absente de l'image). Vérifiez à la main." + self._notes_line(svc, [a]))
                 continue
             affecting = [a for a in recent if self._affects(a, current)]
             unsure = [a for a in recent if self._affects(a, current) is None]
             for a in unsure:
                 self.alert(f"plage:{svc.name}:{a['id']}", f"Avis de sécurité à vérifier : {svc.name}",
-                           f"{a['id']} {a['summary']} — plage de versions illisible, à comparer à la version {current}.")
+                           f"{a['id']} {a['summary']} — plage de versions illisible, à comparer à la version {current}."
+                           + self._notes_line(svc, [a]))
             if not affecting:
                 continue
             names = ", ".join(f"{a['id']}{' / ' + a['cve'] if a['cve'] else ''} ({a['sev'] or '?'})" for a in affecting)
             if e.status == "uptodate":
                 self.alert(f"sans-correctif:{svc.name}:{current}:{affecting[0]['id']}", f"VULNÉRABLE : {svc.name} {current}",
                            f"{names}. L'étiquette suivie ne propose pas encore d'image corrigée. "
-                           f"Surveillez la publication d'une version corrigée.", "error")
+                           f"Surveillez la publication d'une version corrigée." + self._notes_line(svc, affecting), "error")
                 continue
             if not allow_pull:
                 self.log(f"  {svc.name}: la version en cours ({current}) est touchée par {names} ; "
@@ -1035,7 +1055,7 @@ class Updater:
                 self.alert(f"candidate-inconnue:{svc.name}:{e.remote}:{affecting[0]['id']}",
                            f"Avis de sécurité : {svc.name} {current} touché",
                            f"{names}. Une nouvelle image existe mais sa version n'est pas lisible : je NE l'accélère PAS. "
-                           f"À vous de juger : `docker-update now {svc.name} --yes`.", "error")
+                           f"À vous de juger : `docker-update now {svc.name} --yes`." + self._notes_line(svc, affecting), "error")
                 continue
             if candidate == "(simulation)":
                 self.log(f"  {svc.name}: simulation — l'image candidate serait téléchargée pour lire sa version")
@@ -1044,7 +1064,8 @@ class Updater:
             if not fixed:
                 self.alert(f"candidate-touchee:{svc.name}:{e.remote}:{affecting[0]['id']}",
                            f"Avis de sécurité : pas de correctif dans la nouvelle image de {svc.name}",
-                           f"{names}. L'image candidate ({candidate}) est elle aussi concernée ou non confirmée : délai normal conservé.")
+                           f"{names}. L'image candidate ({candidate}) est elle aussi concernée ou non confirmée : délai normal conservé."
+                           + self._notes_line(svc, affecting))
                 continue
             e.fast, e.sec_version = True, candidate
             e.sec_ids = [a["id"] for a in fixed]
@@ -1056,12 +1077,12 @@ class Updater:
                     e.eligible = True
                 self.alert(f"correctif:{svc.name}:{e.remote}", f"Correctif de sécurité détecté : {svc.name}",
                            f"{fixed_names} corrigé dans {candidate} (en cours : {current}). Mise à jour accélérée : "
-                           f"délai ramené à {fmt_duration(svc.security_cooldown)}.", "warn")
+                           f"délai ramené à {fmt_duration(svc.security_cooldown)}." + self._notes_line(svc, fixed), "warn")
             else:
                 why = "mode non automatique" if svc.mode != "auto" else "politique « alert »"
                 self.alert(f"correctif:{svc.name}:{e.remote}", f"Correctif de sécurité disponible : {svc.name}",
                            f"{fixed_names} corrigé dans {candidate} (en cours : {current}). Pas de mise à jour "
-                           f"automatique ({why}) : `docker-update now {svc.name} --yes` pour l'appliquer.", "warn")
+                           f"automatique ({why}) : `docker-update now {svc.name} --yes` pour l'appliquer." + self._notes_line(svc, fixed), "warn")
 
     # -- veille des notes de release (ALERTES SEULEMENT) ---------------------
     # Une note de release est un texte non fiable : elle ne touche jamais au délai, à l'éligibilité ni à la fenêtre.
@@ -1079,9 +1100,11 @@ class Updater:
         """Texte venu d'une note : nettoyé, borné, et sans mention possible (« @ » neutralisé)."""
         return clean_text(value, limit).replace("@", "@\u200b")
 
-    def release_pass(self, evals: list[Eval]) -> None:
-        label = "ALERTE notes de release"
-        alerts = self.state.data["alerts"]
+    def release_scan(self, evals: list[Eval]) -> list[tuple[Service, str, list[dict]]]:
+        """Lit les releases plus récentes que la version en cours. N'envoie que l'alerte « version illisible » ;
+        indexe les avis (GHSA / CVE) cités par les notes, pour compléter les alertes de sécurité."""
+        self._notes = {}
+        scan: list[tuple[Service, str, list[dict]]] = []
         for e in evals:
             svc = e.svc
             if not svc.release_notes or e.status not in ("pending", "uptodate") or not e.old_image_id:
@@ -1092,9 +1115,8 @@ class Updater:
                 self.alert(f"release-version:{svc.name}", f"Notes de release non analysées : {svc.name}",
                            f"Impossible de comparer : la version en cours est absente ou illisible (étiquette "
                            f"{self.cfg.settings.version_label}). Aucune note de release n'est lue pour ce service.",
-                           "info", label)
+                           "info", RELEASE_LABEL)
                 continue
-            shown = current.lstrip("v")
             ignore = [re.compile(p, re.IGNORECASE) for p in svc.release_notes_ignore]
             newer: list[tuple[tuple, str, dict]] = []
             seen: set[str] = set()
@@ -1105,26 +1127,53 @@ class Updater:
                         continue
                     seen.add(r["tag"])
                     newer.append((v, repo, r))
-            weak: list[tuple[str, str]] = []
+            items: list[dict] = []
             for _, repo, r in sorted(newer, key=lambda t: t[0]):
                 hits = [h for h in r["hits"] if not any(p.search(h["x"]) or p.search(h["t"]) for p in ignore)]
-                strong = [h for h in hits if not h["w"]]
                 url = f"https://github.com/{repo}/releases/tag/{r['tag']}"
+                item = {"tag": r["tag"], "url": url, "strong": [h for h in hits if not h["w"]],
+                        "weak": [h for h in hits if h["w"]]}
+                items.append(item)
+                for h in item["strong"]:
+                    if h["k"] in ("CVE", "GHSA"):
+                        self._notes.setdefault(svc.name, {}).setdefault(h["t"].lower(), (r["tag"], url))
+            scan.append((svc, current.lstrip("v"), items))
+        return scan
+
+    def release_alerts(self, scan: list[tuple[Service, str, list[dict]]]) -> None:
+        """Alertes de notes de release. Une note qui ne cite QUE des avis déjà connus du service (GHSA / CVE d'un avis
+        récent) n'a pas d'alerte à elle : l'alerte de l'avis la complète avec le lien de la release."""
+        alerts = self.state.data["alerts"]
+        for svc, shown, items in scan:
+            covered: dict[str, dict] = {}
+            for a in self._recent_advisories(svc):
+                covered[a["id"].lower()] = a
+                if a["cve"]:
+                    covered[a["cve"].lower()] = a
+            weak: list[tuple[str, str]] = []
+            for it in items:
+                tag, url, strong = it["tag"], it["url"], it["strong"]
                 if strong:
-                    motifs = ", ".join(dict.fromkeys(self._external(h["t"], 60) for h in strong[:12]))
-                    self.alert(f"release:{svc.name}:{r['tag']}",
-                               f"Notes de release à lire : {svc.name} {shown} → {r['tag']}",
-                               f"Motifs : {motifs}\nExtrait : « {self._external(strong[0]['x'], 160)} »\nLien : {url}\n"
-                               f"Alerte seulement : le délai de mise à jour n'est pas modifié.", "warn", label)
-                elif hits:
-                    if not self.alerts_on or f"release-info:{svc.name}:{r['tag']}" not in alerts:
-                        weak.append((r["tag"], url))
+                    known = [h for h in strong if h["k"] in ("CVE", "GHSA") and h["t"].lower() in covered]
+                    rest = [h for h in strong if h not in known]
+                    ids = ", ".join(dict.fromkeys(covered[h["t"].lower()]["id"] for h in known))
+                    if not rest:
+                        self.log(f"  notes de release {svc.name}: {tag} ne cite que l'avis {ids}, déjà suivi")
+                        continue
+                    motifs = ", ".join(dict.fromkeys(self._external(h["t"], 60) for h in rest[:12]))
+                    self.alert(f"release:{svc.name}:{tag}", f"Notes de release à lire : {svc.name} {shown} → {tag}",
+                               f"Motifs : {motifs}\nExtrait : « {self._external(rest[0]['x'], 160)} »\nLien : {url}\n"
+                               + (f"Déjà couvert par l'avis : {ids}.\n" if known else "")
+                               + "Alerte seulement : le délai de mise à jour n'est pas modifié.", "warn", RELEASE_LABEL)
+                elif it["weak"]:
+                    if not self.alerts_on or f"release-info:{svc.name}:{tag}" not in alerts:
+                        weak.append((tag, url))
             if weak:
                 lines = [f"- {t} : {u}" for t, u in weak[:10]] + ([f"… et {len(weak) - 10} autre(s)"] if len(weak) > 10 else [])
                 self.alert([f"release-info:{svc.name}:{t}" for t, _ in weak],
                            f"Notes de release : {svc.name} {shown}, mot « security » dans {len(weak)} release(s)",
                            "Signal faible (le mot seul, sans CVE ni correctif annoncé) :\n" + "\n".join(lines),
-                           "info", label)
+                           "info", RELEASE_LABEL)
 
     def _candidate_version(self, e: Eval) -> str:
         """Version de l'image candidate : on la télécharge (sans l'exécuter) pour lire ses étiquettes."""
@@ -1266,8 +1315,9 @@ class Updater:
                     self.log(f"  notes de release {e.svc.name}: version détectée {v}" if v else
                              f"  notes de release {e.svc.name}: version NON détectée (étiquette "
                              f"{self.cfg.settings.version_label} absente ou illisible) — aucune note ne pourra être comparée")
+        notes = self.release_scan(evals)              # avant les avis : ils citent la release qui parle du même avis
         self.security_pass(evals, allow_pull=apply)
-        self.release_pass(evals)
+        self.release_alerts(notes)
         for e in evals:
             self.log(self.describe(e))
         failures = sum(1 for e in evals if e.status == "error")

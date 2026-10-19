@@ -2167,5 +2167,134 @@ class TestStoppedContainers(Base):
         self.assertIn("ERREUR", self.logtext())
 
 
+# ── Avis de sécurité + notes de release : un seul message quand l'information est la même ─────────────────
+
+class TestAdvisoriesAndReleaseNotesTogether(Base):
+    GHSA, CVE = "GHSA-2222-3333-4444", "CVE-2026-12345"
+
+    def setUp(self):
+        super().setUp()
+        self.world.add("traefik", "/stack/traefik", "traefik", "traefik:v3.6", 1, version="v3.7.13")
+        self.gh["traefik/traefik"] = (200, [advisory(self.clock, ghsa=self.GHSA, cve=self.CVE, rng="< 3.7.14")], "a")
+
+    def mk(self, svc=None, **kw):
+        d = {"advisories": ["traefik/traefik"], "release_notes": True, **(svc or {})}
+        return self.make([self.svc(**d)], **kw)
+
+    def notes(self, *rels):
+        self.gh_rel["traefik/traefik"] = (200, list(rels), "r")
+
+    def posted(self) -> str:
+        return "\n".join(p[1]["content"] for p in self.posts)
+
+    LINK = "Notes de release qui le citent : v3.7.14 https://github.com/traefik/traefik/releases/tag/v3.7.14"
+
+    def test_the_release_that_cites_the_advisory_completes_it_instead_of_a_second_alert(self):
+        self.notes(release(self.clock, "v3.7.14", f"Fixes {self.GHSA}"))
+        self.mk().cycle(apply=True)
+        self.assertEqual(len(self.posts), 1, self.logtext())
+        self.assertIn("VULNÉRABLE", self.posted())
+        self.assertIn(self.LINK, self.posted())
+        self.assertNotIn("Notes de release à lire", self.posted())
+        self.assertIn("ne cite que l'avis", self.logtext())
+
+    def test_cve_and_case_are_matched(self):
+        self.notes(release(self.clock, "v3.7.14", "see cve-2026-12345"))
+        self.mk().cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn(self.LINK, self.posted())
+        self.posts.clear()
+        self.setUp()
+        self.gh["traefik/traefik"] = (200, [advisory(self.clock, ghsa="GHSA-cfgh-jmpq-rvwx", rng="< 3.7.14")], "a")
+        self.state_path = os.path.join(self.tmp.name, "other.json")
+        self.notes(release(self.clock, "v3.7.14", "GHSA-CFGH-JMPQ-RVWX"))
+        self.mk().cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn(self.LINK, self.posted())
+
+    def test_a_release_with_more_than_the_advisory_still_alerts_for_the_rest(self):
+        self.notes(release(self.clock, "v3.7.14", f"Fixes {self.GHSA} and CVE-2026-99999"))
+        self.mk().cycle(apply=True)
+        self.assertEqual(len(self.posts), 2)
+        rel = next(p[1]["content"] for p in self.posts if "Notes de release à lire" in p[1]["content"])
+        self.assertIn("CVE-2026-99999", rel)
+        self.assertNotIn(f"Motifs : {self.GHSA}", rel)
+        self.assertNotRegex(rel.split("Extrait")[0], self.GHSA)
+        self.assertIn(f"Déjà couvert par l'avis : {self.GHSA}", rel)
+        self.assertIn(self.LINK, next(p[1]["content"] for p in self.posts if "VULNÉRABLE" in p[1]["content"]))
+
+    def test_weak_signal_in_a_fully_covered_release_is_not_reported(self):
+        self.notes(release(self.clock, "v3.7.14", f"Better security. Fixes {self.GHSA}"))
+        self.mk().cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+        self.assertNotIn("mot « security »", self.posted())
+
+    def test_an_advisory_the_tool_ignores_does_not_cover_the_release(self):
+        cases = {
+            "gravité trop faible": advisory(self.clock, ghsa=self.GHSA, cve=self.CVE, sev="low", rng="< 3.7.14"),
+            "avis retiré": advisory(self.clock, ghsa=self.GHSA, cve=self.CVE, rng="< 3.7.14", withdrawn=True),
+            "avis trop ancien": advisory(self.clock, ghsa=self.GHSA, cve=self.CVE, rng="< 3.7.14", hours_ago=24 * 45),
+        }
+        for name, adv in cases.items():
+            with self.subTest(name):
+                self.posts.clear()
+                self.state_path = os.path.join(self.tmp.name, f"{name}.json")
+                self.gh["traefik/traefik"] = (200, [adv], "a")
+                self.notes(release(self.clock, "v3.7.14", f"Fixes {self.GHSA}"))
+                self.mk().cycle(apply=True)
+                self.assertEqual(len(self.posts), 1)
+                self.assertIn("Notes de release à lire", self.posted(), "la note est la seule source")
+                self.assertNotIn("Déjà couvert", self.posted())
+
+    def test_an_advisory_of_another_repository_does_not_cover(self):
+        self.gh["other/repo"] = (200, [], "o")
+        self.notes(release(self.clock, "v3.7.14", f"Fixes {self.GHSA}"))
+        self.mk(svc={"advisories": ["other/repo"], "release_notes_repos": ["traefik/traefik"]}).cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn("Notes de release à lire", self.posted())
+
+    def test_an_advisory_that_does_not_concern_the_running_version_stays_silent_with_its_release(self):
+        self.gh["traefik/traefik"] = (200, [advisory(self.clock, ghsa=self.GHSA, cve=self.CVE, rng="< 3.0.0")], "a")
+        self.notes(release(self.clock, "v3.7.14", f"Backport of {self.GHSA}"))
+        self.mk().cycle(apply=True)
+        self.assertEqual(self.posts, [], "l'avis ne touche pas la version en cours : rien à dire, ni de l'un ni de l'autre")
+
+    def test_confirmed_fix_alert_carries_the_release_link_and_acceleration_stays_with_the_advisory(self):
+        self.new_remote(n=2)
+        self.world.digest_versions[dg(2)] = "3.7.14"
+        self.notes(release(self.clock, "v3.7.14", f"Fixes {self.GHSA}"))
+        u = self.mk(svc={"mode": "auto", "security_cooldown": "0", "cooldown": "30d"})
+        u.cycle(apply=True)
+        self.assertEqual(len(self.posts) - 1, 1, "détection + mise à jour réussie, jamais de seconde alerte pour la note")
+        self.assertIn("Correctif de sécurité détecté", self.posts[0][1]["content"])
+        self.assertIn(self.LINK, self.posts[0][1]["content"])
+        self.assertEqual(len(self.world.ups), 1, "accélérée par l'AVIS, pas par la note")
+
+    def test_release_alone_accelerates_nothing_even_when_the_advisory_exists_elsewhere(self):
+        self.gh["traefik/traefik"] = (200, [], "a")                # aucun avis publié
+        self.new_remote(n=2)
+        self.world.digest_versions[dg(2)] = "3.7.14"
+        self.notes(release(self.clock, "v3.7.14", f"Fixes {self.GHSA}"))
+        u = self.mk(svc={"mode": "auto", "security_cooldown": "0", "cooldown": "30d"})
+        u.cycle(apply=True)
+        self.assertEqual(self.world.ups, [])
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn("Notes de release à lire", self.posted())
+
+    def test_nothing_is_repeated_next_time(self):
+        self.notes(release(self.clock, "v3.7.14", f"Fixes {self.GHSA}"))
+        u = self.mk()
+        u.cycle(apply=True)
+        self.clock.days(2 / 24)
+        u.cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+
+    def test_check_logs_both_and_sends_nothing(self):
+        self.notes(release(self.clock, "v3.7.14", f"Fixes {self.GHSA}"))
+        self.mk().cycle(apply=False)
+        self.assertEqual(self.posts, [])
+        self.assertIn("ne cite que l'avis", self.logtext())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -101,7 +101,12 @@ Activée service par service avec `release_notes = true`. Elle ne fait **qu'aler
 6. **Une alerte par (service, étiquette de release)**, mémorisée dans le fichier d'état (conservée 120 jours). Elle donne
    le service, `version en cours → release`, les motifs, un extrait nettoyé et borné, et le lien de la release (reconstruit
    par l'outil, jamais copié depuis la réponse). Aucune mention Discord possible.
-7. `check` journalise ces alertes (et la version détectée) sans rien envoyer ni mémoriser ; `run` notifie.
+7. **Avis et notes se complètent.** Si une note cite un avis (GHSA ou CVE) que le service suit déjà via `advisories` (avis
+   récent, non retiré, de sévérité suffisante), il n'y a **pas de second message** : l'alerte de l'avis reçoit la ligne
+   « Notes de release qui le citent : … » avec le lien. Une note qui cite en plus autre chose garde son alerte, limitée
+   à ce qui est nouveau, avec « Déjà couvert par l'avis : … ». L'accélération reste décidée par l'**avis** seul. Limite :
+   le lien n'est ajouté qu'aux alertes d'avis envoyées après la publication de la release.
+8. `check` journalise ces alertes (et la version détectée) sans rien envoyer ni mémoriser ; `run` notifie.
 
 Limites : la comparaison est numérique sur `X.Y[.Z]` ; une release d'une autre branche de maintenance plus récente que la
 vôtre (ex. 9.0.1 alors que vous suivez 8.1) est signalée aussi. Une note qui ne contient aucun des motifs ne déclenche rien
@@ -137,7 +142,7 @@ vôtre (ex. 9.0.1 alors que vous suivez 8.1) est signalée aussi. Une note qui n
 ## Tests et qualité
 
 ```sh
-python3 -m unittest discover -s tests -v      # 190 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
+python3 -m unittest discover -s tests -v      # 201 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
 ```
 
 Les tests de bout en bout lancent le **vrai programme** en sous-processus, avec un faux exécutable `docker` placé dans le
@@ -149,6 +154,7 @@ détectés ; il a aussi révélé trois angles morts des tests, comblés, et un 
 Il n'est pas rejoué par la CI.
 Un troisième, sur le nettoyage des images, a introduit 12 défauts (suppression forcée, après un échec, en simulation,
 réglage par service ignoré…) : les 12 sont détectés.
+D'autres, sur l'échec sans retour arrière (9), les conteneurs arrêtés (6) et le rapprochement avis / notes (12), l'ont été de même.
 Un second test de mutation, sur la veille des notes de release, a introduit 33 défauts (accélération par une note, pré-version
 non ignorée, mot `security` seul pris pour fort, `@everyone` non neutralisé, doublon d'alerte…) : 32 détectés après
 correction de 5 angles morts des tests ; le dernier est équivalent (valeur par défaut jamais lue).
