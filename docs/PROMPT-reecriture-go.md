@@ -121,7 +121,7 @@ est un fichier TOML existant : **le lecteur doit accepter tout ce que `tomllib` 
 
 ## 5. Plan par phases (un commit + un `git push` par phase, tests au vert)
 
-Avant de coder, écris et commite `docs/PORTAGE.md` : (a) l'inventaire **test Python → test Go** (tableau, un test Python = une ligne ; rien
+Avant de coder, écris et commite `docs/PORTAGE.md` (avec une section « Propositions » vide, voir §12) : (a) l'inventaire **test Python → test Go** (tableau, un test Python = une ligne ; rien
 n'est abandonné sans justification écrite), (b) la liste des écarts connus, (c) le plan ci-dessous ajusté. Mets-le à jour à chaque phase.
 
 | Phase | Contenu | Critère d'acceptation |
@@ -272,7 +272,8 @@ Lecture seule : tableau service / groupe / mode / délai / fenêtre / veille (av
 - `init`, `add`, `delete`, `list` testés (golden + propriété d'aller-retour + scénarios interactifs par tube) et documentés
   (README, `docs/AGENT.md`, l'étape 2 de la procédure de déploiement s'appuie désormais sur `init`).
 - Aucun secret dans les journaux, les sorties, les commits. Aucun appel au vrai Docker, à GitHub ou à Discord pendant les tests.
-- `docs/PORTAGE.md` à jour : chaque test Python a son équivalent Go ou une justification.
+- `docs/PORTAGE.md` à jour : chaque test Python a son équivalent Go ou une justification, et la section « Propositions » est remise au
+  propriétaire (§12).
 
 ## 11. Conduite
 
@@ -281,5 +282,24 @@ Lecture seule : tableau service / groupe / mode / délai / fenêtre / veille (av
 - Après chaque phase : un compte rendu court (ce qui est fait, tests, écarts, prochaine phase). Ne t'arrête que pour une vraie question
   d'architecture ou de comportement que ni ce document, ni le Python, ni le README ne tranchent ; en cas de doute sur le comportement,
   **le Python fait foi**.
-- Ne mélange pas portage et amélioration : toute idée d'amélioration pendant les phases 0 à 6 va dans une liste « après la parité » à
-  la fin de `docs/PORTAGE.md`.
+- Ne mélange pas portage et amélioration : **n'implémente aucune amélioration pendant les phases 0 à 6**.
+
+## 12. Propositions d'amélioration (demandées par le propriétaire)
+
+Tu lis tout le code et tous les tests : tu es bien placé pour voir ce qui peut être mieux. **Le propriétaire veut que tu les lui
+proposes**, y compris sur ce qui existe déjà (code, fonctionnalités, messages, documentation, procédure de déploiement, tests).
+
+- Tiens à jour, dans `docs/PORTAGE.md`, une section **« Propositions »**. Une entrée = *quoi* (une phrase), *pourquoi* (le problème
+  réel, avec un exemple ou une référence `fichier:ligne`), *effet sur le comportement* (aucun / visible : lequel), *risque*, *effort*
+  (petit / moyen / gros), *ta recommandation* (faire / ne pas faire / à discuter). Pas de liste de souhaits vagues.
+- Sont à signaler : un **défaut ou une incohérence** du Python (écris-le dès que tu le vois, avec un test qui le montre, et dis si tu l'as
+  reproduit ou corrigé en Go), un cas non couvert par les tests, une fonctionnalité fragile, un message peu clair, une dépendance à
+  une sortie de `docker` mal vérifiée, un point de sécurité, une simplification possible, une option de configuration inutile ou
+  manquante, une possibilité que Go offre (parallélisme des lectures du registre, lecture directe du registre sans `buildx`, interface
+  Docker directe…).
+- **Ne les applique pas.** Présente-les au propriétaire dans le compte rendu de chaque phase (les nouvelles seulement, en quelques
+  lignes) et dans un récapitulatif **à la fin de la phase 6**, avant les phases `init` / `add` / `delete` : il choisira lesquelles
+  entrent dans la phase 7 ou plus tard. Seule exception : un défaut qui rend la **parité impossible** ou qui est dangereux
+  (secret journalisé, commande non bornée) : corrige-le dans le Python et le Go avec un test, et signale-le tout de suite.
+- Pendant la phase 7, applique la même règle aux trois nouvelles commandes : propose ce qui manque (par exemple `rename`, `edit`,
+  export de la configuration, vérification des dépôts GitHub), sans l'ajouter de toi-même.
