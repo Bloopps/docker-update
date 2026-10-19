@@ -21,12 +21,12 @@ chmod +x docker-update-linux-amd64
 sudo ./docker-update-linux-amd64 init
 ```
 
-Ensuite, `sudo docker-update update` installe la dernière release (somme SHA256 vérifiée, binaire seul remplacé ; `--check` pour voir sans installer). Chaque fusion sur `main` publie une release. Les formats de configuration et d'état sont migrés (`docker-update migrate`, voir la référence).
+Ensuite, `sudo docker-update update` installe la dernière release (somme SHA256 vérifiée, binaire seul remplacé ; `--check` pour voir sans installer). Chaque fusion sur `main` publie une release. Les formats de configuration et d'état et les unités systemd sont migrés avec votre accord (`docker-update migrate`, voir la référence).
 
 `init` fait tout, dans l'ordre, en vous demandant avant chaque modification :
 
 1. **Vérifie** le serveur : Docker et `compose`, droits, accès au registre et à GitHub. Ce qui bloque est expliqué avec la commande qui le corrige.
-2. **Installe** le binaire dans `/usr/local/sbin`, crée les dossiers, écrit les unités `systemd` (jamais écrasées si elles existent déjà).
+2. **Installe** le binaire dans `/usr/local/sbin`, crée les dossiers, écrit les unités `systemd` (jamais écrasées par `init` ; `migrate` propose de les mettre à jour, avec aperçu et sauvegarde).
 3. **Relève** vos conteneurs en marche et vous demande, service par service, lesquels suivre.
 4. **Écrit** `/etc/docker-update/updates.toml` après votre confirmation, propose d'enregistrer votre webhook Discord, puis **active le minuteur**.
 

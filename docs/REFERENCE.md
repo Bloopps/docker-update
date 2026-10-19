@@ -89,7 +89,7 @@ L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n
 | `notify-test` | envoie un message de test (vérifie le webhook) |
 | `init [--yes] [--check] [--force] [--no-install]` | installe (binaire, dossiers, unités systemd), vérifie, relève les conteneurs Compose qui tournent, crée la configuration et active le minuteur (voir Installation) |
 | `update [--check]` | se met à jour depuis la dernière release GitHub (voir ci-dessous) |
-| `migrate [--yes]` | réécrit la configuration au format de cette version (voir « Migrations ») |
+| `migrate [--yes]` | met la configuration et les unités systemd installées au format de cette version (voir « Migrations ») |
 | `list` | tableau des services configurés : groupe, mode, délai, fenêtre, veille (avis, notes), pause ; lecture seule |
 | `add NOM --compose-dir D --service S [options]` | ajoute **un** service au fichier de configuration (voir ci-dessous) |
 | `rename ANCIEN NOUVEAU [--group]` | renomme un service (ou un groupe avec `--group`) dans le fichier et reporte pauses, erreurs et alertes de l'état sous le nouveau nom |
@@ -118,10 +118,15 @@ Le format de la configuration (clé `[settings] config_version`, absente = 0) et
 - **L'état** est migré de la même façon ; à sa première écriture, l'ancien fichier est copié en `state.json.vN.bak`.
 - **Un fichier plus récent que l'outil est refusé** avec un message clair (retour en arrière du binaire) : rien n'est lu de travers
   ni écrasé. Configuration : code 2 ; état : code 1.
-- Les ajouts de clés optionnelles ne demandent pas de migration (valeur par défaut). Les unités systemd ne sont jamais réécrites par
-  l'outil (elles ont pu être adaptées) : une release qui en change le dira dans ses notes.
+- **Unités systemd** : chaque unité fournie porte une ligne `# docker-update-unit-version: N`. Si l'unité installée est plus ancienne
+  (marqueur absent ou inférieur) et différente de la fournie, `validate` avertit et `migrate` montre les différences, demande
+  confirmation unité par unité (`--yes` : sans demander), sauvegarde l'ancienne (`.bak-DATE`), écrit la nouvelle puis lance
+  `systemctl daemon-reload` (rien n'est redémarré). Une unité identique à la fournie, ou déjà au marqueur courant (même adaptée à la
+  main), n'est pas proposée ; refuser la laisse telle quelle. Pour garder des réglages, préférer un fichier de surcharge
+  (`systemctl edit docker-update.service`) plutôt que de modifier l'unité.
+- Les ajouts de clés optionnelles ne demandent pas de migration (valeur par défaut).
 - Pour le développeur : un changement de format ajoute une `Migration` à la fin de `migrations` (`internal/config/migrate.go`,
-  `internal/state/state.go`) avec un test ; ne jamais modifier une migration déjà publiée.
+  `internal/state/state.go`) ; pour une unité, modifier le fichier de `deploy/` et incrémenter `deploy.UnitVersion` avec un test ; ne jamais modifier une migration déjà publiée.
 
 ### Modifier la configuration : `add`, `rename`, `edit` et `delete`
 

@@ -80,11 +80,15 @@ func installPlan(env *Env, settings config.Settings, cfgPath string) (steps []in
 				return err
 			}
 			// l'unité fournie vise les chemins par défaut : on y met ceux de cette installation
-			body := strings.NewReplacer("/usr/local/sbin/docker-update", env.InstallBin, "/etc/docker-update/updates.toml", cfgPath).Replace(u.body)
-			return writeFileAtomic(path, []byte(body), 0o644)
+			return writeFileAtomic(path, []byte(renderUnit(env, cfgPath, u.body)), 0o644)
 		}})
 	}
 	return steps, reload
+}
+
+// renderUnit met dans l'unité fournie (qui vise les chemins par défaut) ceux de cette installation.
+func renderUnit(env *Env, cfgPath, body string) string {
+	return strings.NewReplacer("/usr/local/sbin/docker-update", env.InstallBin, "/etc/docker-update/updates.toml", cfgPath).Replace(body)
 }
 
 // writeFileAtomic écrit un fichier de façon atomique avec les droits donnés.

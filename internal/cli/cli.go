@@ -244,7 +244,7 @@ func execute(g globals, cmd string, sub subArgs, env *Env, log func(string)) (in
 	}
 	switch cmd {
 	case "validate":
-		return validate(cfg, sub.flags["--online"], env, log), nil
+		return validate(cfg, g.config, sub.flags["--online"], env, log), nil
 	case "set-webhook":
 		return 0, setWebhook(cfg, g.dryRun, env, log)
 	case "list":
@@ -322,7 +322,7 @@ func lock(path string) (func(), error) {
 }
 
 // validate vérifie la configuration et les outils, sans rien toucher (--online : et que les dépôts GitHub existent).
-func validate(cfg *config.Config, online bool, env *Env, log func(string)) int {
+func validate(cfg *config.Config, cfgPath string, online bool, env *Env, log func(string)) int {
 	problems := 0
 	if len(cfg.Migrations) > 0 {
 		log("AVERTISSEMENT : la configuration est dans un ancien format (lue telle quelle) ; `docker-update migrate` la met à jour")
@@ -336,6 +336,9 @@ func validate(cfg *config.Config, online bool, env *Env, log func(string)) int {
 			log(fmt.Sprintf("ERREUR : %s introuvable", t))
 			problems++
 		}
+	}
+	if old := outdatedUnits(env, cfgPath); len(old) > 0 {
+		log("AVERTISSEMENT : unité(s) systemd d'une version plus ancienne que celle de cet outil ; `docker-update migrate` les met à jour (aperçu et confirmation)")
 	}
 	units := map[string]bool{}
 	for _, s := range cfg.Services {

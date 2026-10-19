@@ -443,5 +443,5 @@ Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *ef
 - **État** : appliquée, à vérifier une fois en conditions réelles (première release automatique après fusion).
 
 ### Proposition 9 : migrations de la configuration et de l'état
-- **Quoi** : `config_version` ([settings]) et `schema` (état) ; migrations en mémoire à la lecture, `migrate` pour réécrire la configuration, copie `.vN.bak` de l'état ; refus d'un fichier plus récent que l'outil.
+- **Quoi** : `config_version` ([settings]) et `schema` (état) ; migrations en mémoire à la lecture, `migrate` pour réécrire la configuration, copie `.vN.bak` de l'état ; refus d'un fichier plus récent que l'outil ; unités systemd versionnées (`# docker-update-unit-version`), proposées par `migrate` avec aperçu, confirmation et sauvegarde.
 - **Effet** : le fichier d'état gagne la clé `schema` (la réécriture n'est donc plus identique octet pour octet à celle du Python : le test de parité attend cette seule différence). **Risque** : faible. **État** : appliquée.

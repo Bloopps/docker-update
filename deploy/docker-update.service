@@ -1,3 +1,4 @@
+# docker-update-unit-version: 1
 [Unit]
 Description=Mises à jour des images Docker avec délai de sécurité (docker-update)
 Documentation=https://github.com/Bloopps/docker-update/blob/main/docs/AGENT.md
