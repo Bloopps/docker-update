@@ -68,6 +68,8 @@ type Env struct {
 	Now func() time.Time
 	// UpdateDeps donne ce que `update` utilise (défaut : releases GitHub réelles, binaire en cours).
 	UpdateDeps func() selfupdate.Deps
+	// Color force les couleurs (tests) ; sinon : terminal, hors NO_COLOR et TERM=dumb.
+	Color bool
 	// Tag est l'étiquette de release compilée dans le binaire (« v1.2.3 », ou « dev »).
 	Tag string
 	// NewEngine construit le cœur (défaut : updater.New).
@@ -174,7 +176,13 @@ func (e *Env) fill() {
 // Main exécute une commande et renvoie le code de sortie.
 func Main(args []string, env *Env) int {
 	env.fill()
-	log := func(msg string) { fmt.Fprintln(env.Stdout, msg) }
+	color := env.Color || useColor(env.Stdout, env.Getenv)
+	log := func(msg string) {
+		if color {
+			msg = colorize(msg)
+		}
+		fmt.Fprintln(env.Stdout, msg)
+	}
 
 	g, cmd, rest, err := parseGlobals(args)
 	if err == nil && !g.help && !g.version && cmd == "" {
