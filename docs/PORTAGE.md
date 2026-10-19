@@ -330,7 +330,7 @@ Tests ajoutés par le portage (absents du Python) :
 | `tests/test_differential.py` (14 scénarios, `DU_BIN`) ; **supprimé avec le Python** (dernier état : commit `50952f1`) | exécute le script Python et le binaire Go sur le même faux Docker et le même faux serveur HTTP, compare codes, sorties, état, requêtes et corps envoyés |
 | `internal/updater` : `TestExtra_HoldOfAGroupPausesEveryMember` | mutation : ignorer la pause d'un groupe (`held`) survivait à toute la suite Python |
 | `internal/updater` : `TestExtra_DryRunNeverWaitsNorProbes` | mutation : en simulation, `up` attendait et sondait quand même |
-| `internal/updater` : `TestExtra_AnAlertWhoseDeliveryFailedIsNotSentAgain` | caractérise le comportement du Python (proposition 3) |
+| `internal/updater` : `TestExtra_AnAlertWhoseDeliveryFailedIsSentAgainThenOnlyOnce`, `TestModes_NotifyModeRetriesAfterAFailedDelivery` | proposition 3 (appliquée) ; mutation : inscrire les alertes avant l'envoi, ou ignorer l'échec, est détecté |
 
 Mutation manuelle de la phase 4 (34 défauts introduits à la main dans `internal/updater`, suite relancée à chaque fois) : 31 détectés d'emblée,
 2 survivants corrigés par les tests ci-dessus, 1 survivant équivalent : retirer `!e.FailedBefore` dans l'accélération de sécurité (`security.go`) ne
@@ -359,6 +359,9 @@ d'un test) et 1 équivalent documenté. Rejouer : voir `docs/PORTAGE.md` ci-dess
 30. **`init` : ordre des membres d'un groupe** : les labels Docker ne donnent pas l'ordre du fichier compose (Compose range ses services par ordre alphabétique) ; `init` propose l'ordre alphabétique et demande l'ordre voulu (« Ordre de mise à jour »).
 31. **`init` : vérification d'un conteneur** : en plus du nom de projet (`compose config`), `init` et `add --container` contrôlent que `compose ps -q --all SERVICE` désigne bien le conteneur : c'est exactement ce que fera l'outil.
 
+32. **Tables et clés inconnues refusées** (proposition 2) : une table `[x]`, un `[[x]]` autre que `[[service]]` ou une clé à la racine du fichier est une erreur de configuration (code 2) ; le Python les ignorait.
+33. **Alerte non envoyée = renvoyée** (proposition 3) : si l'envoi du rapport échoue, les alertes et les « prêtes » de ce rapport ne sont pas marquées signalées ; le passage suivant les renvoie. Le Python les perdait.
+
 ## 5. Propositions
 
 Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *effet sur le comportement*, *risque*, *effort*,
@@ -372,7 +375,7 @@ Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *ef
   refusé ; le Python, lui, accepterait `"v1.0\n"`).
 - **Effet sur le comportement** : visible seulement pour une configuration déjà invalide en pratique (refus en plus, message identique).
 - **Risque** : quasi nul. **Effort** : petit.
-- **Recommandation** : faire. État actuel : déjà strict en Go dès la phase 1 (écart n° 2) ; le Python n'est pas corrigé.
+- **Recommandation** : faire. **État : appliquée** (déjà strict en Go dès la phase 1, écart n° 2).
 
 ### Proposition 2 : refuser les tables et clés inconnues à la racine du fichier (défaut du Python)
 
@@ -383,6 +386,7 @@ Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *ef
 - **Effet sur le comportement** : visible : une configuration qui contient des tables ou clés inutiles est refusée (code 2) au lieu d'être acceptée.
 - **Risque** : faible (un fichier existant avec une table étrangère cesserait de valider). **Effort** : petit.
 - **Recommandation** : faire, après la bascule (c'est un changement de comportement).
+- **État : appliquée** (`config.Load` refuse `[x]`, `[[x]]` et toute clé à la racine ; messages dans `TestStructureErrors`). Écart n° 32.
 
 ### Proposition 3 : ne pas perdre une alerte quand l'envoi échoue (défaut du Python)
 
@@ -394,6 +398,7 @@ Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *ef
 - **Effet sur le comportement** : visible seulement après un échec d'envoi : le rapport non remis serait renvoyé au passage suivant (une seule fois par alerte réussie).
 - **Risque** : faible (il faut que `Send` dise s'il a réussi, et ne marquer les clés qu'après). **Effort** : moyen (`Notifier.Send` renvoie un booléen, `flush` valide les clés).
 - **Recommandation** : faire, après la bascule (c'est un changement de comportement ; les mises à jour appliquées ne sont pas concernées, seulement l'information).
+- **État : appliquée** : `Notifier.Send` renvoie un booléen ; `alert()` et la liste des versions « prêtes » ne font que préparer des clés ; `flush()` les inscrit dans l'état seulement si l'envoi a réussi. Écart n° 33.
 
 ### Proposition 4 : publier des versions (binaires et sommes de contrôle) depuis la CI
 - **Quoi** : un workflow déclenché par une étiquette `v*` qui compile amd64 et arm64 et joint les binaires et `SHA256SUMS` à une release GitHub.

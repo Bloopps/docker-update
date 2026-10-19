@@ -140,14 +140,15 @@ func asciiHeader(s string) string {
 }
 
 // Send envoie un message. Sans URL (ou fichier illisible) : rien. En simulation : seulement journalisé.
-func (n *Notifier) Send(title, text, level string) {
+// Elle dit si le message est parti : faux seulement quand l'envoi a échoué (rien à renvoyer en simulation ou sans URL).
+func (n *Notifier) Send(title, text, level string) bool {
 	if n.DryRun {
 		n.Log("[simulation] notification : " + title)
-		return
+		return true
 	}
 	url := n.URL()
 	if url == "" {
-		return
+		return true
 	}
 	headers := map[string]string{"User-Agent": "docker-update/1.0"}
 	var body []byte
@@ -174,5 +175,7 @@ func (n *Notifier) Send(title, text, level string) {
 	if err := n.Post(url, body, headers); err != nil {
 		// jamais l'URL (ni le texte de l'erreur, qui peut la contenir) dans le journal
 		n.Log(fmt.Sprintf("notification non envoyée (%s)", ErrorKind(err)))
+		return false
 	}
+	return true
 }

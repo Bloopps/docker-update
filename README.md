@@ -132,7 +132,7 @@ l'outil **refuse de démarrer** sinon.
 prudent), `cooldown`, `group`, `health_timeout`, `window`, `cleanup`, `smoke_url` +
 `smoke_expect`, `advisories`, `min_severity` (défaut `high`), `security_cooldown` (défaut `6h`), `security_policy`
 (`fast` ou `alert`), `release_notes` (défaut `false`), `release_notes_repos`, `release_notes_ignore`. Les fautes de
-frappe dans les clés sont refusées.
+frappe dans les clés, les tables inconnues (`[setings]`) et les clés inconnues à la racine du fichier sont refusées.
 
 ## Comment la veille de sécurité décide
 
@@ -147,6 +147,8 @@ frappe dans les clés sont refusées.
 6. Une version « à jour mais vulnérable » (aucune image corrigée n'existe encore) déclenche une alerte, une seule fois.
 
 ## Notifications
+
+Si l'envoi échoue (webhook injoignable), les alertes et les versions « prêtes » de ce message ne sont pas marquées comme signalées : le passage suivant les renvoie.
 
 Un passage `run` (ou `now`) envoie **au plus UN message**, quel que soit le nombre d'applications suivies :
 

@@ -32,19 +32,28 @@ func TestExtra_DryRunNeverWaitsNorProbes(t *testing.T) {
 	b.eq(probes, 0, "aucune sonde en simulation")
 }
 
-// Caractérisation (comportement du Python, voir PORTAGE.md, proposition 3) : une alerte dont l'envoi échoue est quand même
-// marquée « signalée » dans l'état ; elle n'est jamais renvoyée.
-func TestExtra_AnAlertWhoseDeliveryFailedIsNotSentAgain(t *testing.T) {
+// Proposition 3 (appliquée, voir PORTAGE.md) : une alerte n'est marquée « signalée » qu'une fois l'envoi réussi.
+// Si l'envoi échoue, le passage suivant la renvoie ; une fois envoyée, elle ne repart plus.
+func TestExtra_AnAlertWhoseDeliveryFailedIsSentAgainThenOnlyOnce(t *testing.T) {
 	b := newSec(t)
 	u := b.mkSec(nil)
 	real := u.notifier.Post
 	u.notifier.Post = func(url string, body []byte, headers map[string]string) error { return errString("réseau coupé") }
 	b.cycle(u, true)
 	b.in("notification non envoyée", b.logtext())
+	if len(u.state.Alerts) != 0 {
+		t.Fatalf("une alerte non envoyée ne doit pas être inscrite dans l'état : %v", u.state.Alerts)
+	}
 	u.notifier.Post = real
 	b.clock.days(2.0 / 24)
 	b.cycle(u, true)
-	b.eq(len(b.posts), 0, "l'alerte de sécurité détectée pendant la panne n'est plus jamais envoyée")
+	if len(b.posts) == 0 {
+		t.Fatal("l'alerte de sécurité manquée pendant la panne doit être renvoyée")
+	}
+	sent := len(b.posts)
+	b.clock.days(2.0 / 24)
+	b.cycle(u, true)
+	b.eq(len(b.posts), sent, "une alerte envoyée ne repart pas")
 }
 
 type errString string

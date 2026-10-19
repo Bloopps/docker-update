@@ -47,7 +47,34 @@ func (u *Updater) flush() {
 	if rep.Empty() {
 		return
 	}
-	u.notifier.Send(rep.Title(), rep.Render(u.cfg.Settings.NotifyFormat == "discord", notify.ReportBudget), rep.Level())
+	keys, ready := u.pendingKeys, u.pendingReady
+	u.pendingKeys, u.pendingReady = nil, nil
+	if !u.notifier.Send(rep.Title(), rep.Render(u.cfg.Settings.NotifyFormat == "discord", notify.ReportBudget), rep.Level()) {
+		return // envoi échoué : rien n'est marqué « signalé », le prochain passage renverra ces alertes
+	}
+	now := u.now()
+	for _, k := range keys {
+		u.state.Alerts[k] = now
+	}
+	for _, ref := range ready {
+		if rec := u.state.Get(ref); rec != nil {
+			rec.Notified = true
+			u.state.Put(ref, rec)
+		}
+	}
+}
+
+// alerted dit si l'alerte est déjà signalée (dans l'état, ou dans le rapport en cours d'envoi).
+func (u *Updater) alerted(key string) bool {
+	if _, ok := u.state.Alerts[key]; ok {
+		return true
+	}
+	for _, k := range u.pendingKeys {
+		if k == key {
+			return true
+		}
+	}
+	return false
 }
 
 // alert journalise, puis signale une seule fois par clé (plusieurs clés : une ligne pour le lot) dans le rapport.
@@ -58,17 +85,14 @@ func (u *Updater) alert(keys []string, title, text, level, label, kind string) {
 	}
 	known := true
 	for _, k := range keys {
-		if _, ok := u.state.Alerts[k]; !ok {
+		if !u.alerted(k) {
 			known = false
 		}
 	}
 	if known {
 		return
 	}
-	now := u.now()
-	for _, k := range keys {
-		u.state.Alerts[k] = now
-	}
+	u.pendingKeys = append(u.pendingKeys, keys...) // inscrites dans l'état seulement si l'envoi réussit (flush)
 	u.report.Add(kind, title, text, level)
 }
 
@@ -366,7 +390,6 @@ func (u *Updater) releaseScan(evals []*Eval) []scanEntry {
 // releaseAlerts : alertes de notes de release. Une note qui ne cite QUE des avis déjà connus du service (GHSA / CVE
 // d'un avis récent) n'a pas d'alerte à elle : l'alerte de l'avis la complète avec le lien de la release.
 func (u *Updater) releaseAlerts(scan []scanEntry) {
-	alerts := u.state.Alerts
 	for _, s := range scan {
 		svc := s.svc
 		covered := map[string]textutil.Advisory{}
@@ -420,7 +443,7 @@ func (u *Updater) releaseAlerts(scan []scanEntry) {
 				u.alert([]string{fmt.Sprintf("release:%s:%s", svc.Name, it.tag)},
 					fmt.Sprintf("Notes de release à lire : %s %s → %s", svc.Name, s.shown, it.tag), text, "warn", releaseLabel, "notes")
 			} else if len(it.weak) > 0 {
-				if _, seen := alerts[fmt.Sprintf("release-info:%s:%s", svc.Name, it.tag)]; !u.alertsOn || !seen {
+				if !u.alertsOn || !u.alerted(fmt.Sprintf("release-info:%s:%s", svc.Name, it.tag)) {
 					weak = append(weak, weakRef{it.tag, it.url})
 				}
 			}

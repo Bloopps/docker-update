@@ -256,6 +256,25 @@ func TestModes_NotifyModeNotifiesOnceAndNeverApplies(t *testing.T) {
 	b.regex(`traefik\s+`+dg(2)[7:19]+`\s+1 j`, content)
 }
 
+// Proposition 3 : « prête » n'est marquée notifiée qu'après un envoi réussi.
+func TestModes_NotifyModeRetriesAfterAFailedDelivery(t *testing.T) {
+	b := newBase(t)
+	b.traefik()
+	b.newRemote(2)
+	u := b.make([]M{svc(M{"mode": "notify", "cooldown": "1d"})})
+	b.cycle(u, true)
+	b.clock.days(1.1)
+	real := u.notifier.Post
+	u.notifier.Post = func(url string, body []byte, headers map[string]string) error { return errString("réseau coupé") }
+	b.cycle(u, true)
+	b.eq(len(b.posts), 0)
+	u.notifier.Post = real
+	b.cycle(u, true)
+	b.eq(len(b.posts), 1)
+	b.cycle(u, true)
+	b.eq(len(b.posts), 1)
+}
+
 func TestModes_ManualModeIsSilent(t *testing.T) {
 	b := newBase(t)
 	b.traefik()

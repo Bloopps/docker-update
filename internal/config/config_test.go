@@ -157,10 +157,18 @@ func TestStructureErrors(t *testing.T) {
 			t.Errorf("%q devrait échouer", src)
 		}
 	}
-	// Comme en Python, les autres tables et clés racine sont ignorées (voir PORTAGE.md, proposition 2).
-	if cfg := mustParse(t, "autre = 1\n[inconnue]\nx = 2\n"); len(cfg.Services) != 0 {
-		t.Errorf("%+v", cfg)
+	// Proposition 2 (appliquée) : une table, un tableau de tables ou une clé racine inconnus sont refusés, au lieu d'être ignorés.
+	for src, want := range map[string]string{
+		"autre = 1\n":                    "clé inconnue à la racine du fichier : autre",
+		"[inconnue]\nx = 2\n":            "table inconnue : [inconnue]",
+		"[setings]\ncooldown = \"1d\"\n": "table inconnue : [setings]",
+		"[[autre]]\nx = 1\n":             "tableau de tables inconnu : [[autre]]",
+	} {
+		if _, err := parse(t, src); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q : %v, attendu %q", src, err, want)
+		}
 	}
+	mustParse(t, "[settings]\n"+one())
 }
 
 func TestDuplicatesAndGroups(t *testing.T) {

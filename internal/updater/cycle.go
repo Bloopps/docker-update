@@ -195,8 +195,7 @@ func (u *Updater) Cycle(apply bool, names []string, notifyReport bool) (int, err
 				rec := u.state.Get(e.Ref)
 				if rec != nil && !rec.Notified {
 					u.report.AddReady(e.Svc.Name, short(e.Remote), textutil.FmtDuration(u.now()-e.FirstSeen))
-					rec.Notified = true
-					u.state.Put(e.Ref, rec)
+					u.pendingReady = append(u.pendingReady, e.Ref) // « Notified » après l'envoi réussi (flush)
 				}
 			}
 		}

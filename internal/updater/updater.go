@@ -106,7 +106,10 @@ type Updater struct {
 	ghGet    github.GetFunc
 
 	alertsOn bool
-	report   *notify.Report
+	// Alertes et « prêt » du rapport en cours : inscrits dans l'état seulement si l'envoi réussit.
+	pendingKeys  []string
+	pendingReady []string
+	report       *notify.Report
 	// notes : service -> {avis cité (en minuscules) -> (release, lien)}
 	notes map[string]map[string][2]string
 }

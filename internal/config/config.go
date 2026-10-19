@@ -227,6 +227,21 @@ func Parse(doc *tomlmini.Document) (*Config, error) {
 	if _, ok := doc.Tables["service"]; ok {
 		return nil, errf("« service » doit être un tableau de tables [[service]]")
 	}
+	// Une faute de frappe dans un en-tête (« [setings] ») ferait ignorer tous les réglages : tout ce qui n'est pas
+	// [settings] ou [[service]] est refusé (proposition 2).
+	for _, name := range sortedKeys(doc.Tables) {
+		if name != "settings" {
+			return nil, errf("table inconnue : [%s] (attendu : [settings] et [[service]])", name)
+		}
+	}
+	for _, name := range sortedKeys(doc.Arrays) {
+		if name != "service" {
+			return nil, errf("tableau de tables inconnu : [[%s]] (attendu : [settings] et [[service]])", name)
+		}
+	}
+	if keys := doc.Root.Keys(); len(keys) > 0 {
+		return nil, errf("clé inconnue à la racine du fichier : %s (les clés vont sous [settings] ou [[service]])", textutil.CleanText(keys[0], 64))
+	}
 	st, err := parseSettings(doc.Tables["settings"])
 	if err != nil {
 		return nil, err
@@ -617,4 +632,13 @@ func CheckTrustedFile(path string) error {
 		return errf("%s : propriétaire illisible", path)
 	}
 	return CheckTrusted(path, euid, st.Uid, info.Mode().Perm())
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
