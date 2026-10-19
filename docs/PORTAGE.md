@@ -404,7 +404,7 @@ Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *ef
 - **Quoi** : un workflow déclenché par une étiquette `v*` qui compile amd64 et arm64 et joint les binaires et `SHA256SUMS` à une release GitHub.
 - **Pourquoi** : aujourd'hui aucune version n'existe ; on compile ou on prend l'artefact de la CI (expire). `docker-update version` affiche `dev` hors CI.
 - **Effet sur le comportement** : aucun sur l'outil. **Risque** : faible (permissions `contents: write` pour ce seul workflow). **Effort** : petit.
-- **Recommandation** : faire.
+- **Recommandation** : faire. **État : appliquée** (`.github/workflows/release.yml` : étiquette `v*` → tests, binaires amd64 et arm64, `SHA256SUMS`, release ; version injectée par `-X main.version`). Non exécutable avant la première étiquette : à vérifier avec `v0.1.0` après fusion.
 
 ### Proposition 5 : `golangci-lint` en CI
 - **Quoi** : ajouter un lint en plus de `gofmt` et `go vet`. **Pourquoi** : attrape des erreurs ignorées et du code mort que `vet` laisse passer.
