@@ -12,7 +12,7 @@ Fonctions
   - modes par service : auto (applique après le délai), notify (prévient seulement), manual (ignore) ;
   - groupes (plusieurs services d'une même image, mis à jour ensemble dans l'ordre du fichier) ;
   - fenêtre horaire (ex. 02:00-05:00) : on observe tout le temps, on n'applique que dans la fenêtre ;
-  - crochet avant mise à jour (ex. sauvegarde de la base), test de fumée HTTP après ;
+  - test de fumée HTTP après la mise à jour ;
   - retour arrière automatique ou désactivé par service ; pause (hold) ;
   - notifications Discord (ntfy ou JSON possibles), anti-spam des erreurs répétées ;
   - signal de vie (heartbeat) pour détecter un arrêt silencieux de l'outil ;
@@ -310,7 +310,6 @@ class Service:
     group: str
     rollback: bool
     health_timeout: int
-    pre_hook: list[list[str]]
     window: tuple[int, int] | None = None
     smoke_url: str = ""
     smoke_expect: list[int] = field(default_factory=list)
@@ -337,7 +336,7 @@ _SETTINGS_KEYS = {"state_file", "lock_file", "registry_tool", "notify_url_file",
                   "default_cooldown", "settle_seconds", "health_timeout", "window", "heartbeat_url_file",
                   "github_api", "github_token_file", "advisory_poll", "advisory_lookback", "version_label"}
 _SERVICE_KEYS = {"name", "compose_dir", "service", "compose_files", "mode", "cooldown", "group",
-                 "rollback", "health_timeout", "pre_hook", "window", "smoke_url", "smoke_expect",
+                 "rollback", "health_timeout", "window", "smoke_url", "smoke_expect",
                  "advisories", "min_severity", "security_cooldown", "security_policy",
                  "release_notes", "release_notes_repos", "release_notes_ignore"}
 
@@ -412,13 +411,6 @@ def parse_config(data: dict) -> Config:
         group = str(s.get("group", ""))
         if group and not NAME_RE.match(group):
             raise ConfigError(f"{name} : nom de groupe invalide {group!r}")
-        hooks = s.get("pre_hook", [])
-        if not isinstance(hooks, list) or not all(
-                isinstance(h, list) and h and all(isinstance(a, str) for a in h) for h in hooks):
-            raise ConfigError(f"{name} : pre_hook doit être une liste de commandes (listes de chaînes)")
-        for h in hooks:
-            if not os.path.isabs(h[0]):
-                raise ConfigError(f"{name} : pre_hook doit appeler un programme par chemin absolu")
         ht = s.get("health_timeout", st.health_timeout)
         if not isinstance(ht, int) or isinstance(ht, bool) or ht < 1:
             raise ConfigError(f"{name} : health_timeout doit être un entier >= 1")
@@ -463,7 +455,7 @@ def parse_config(data: dict) -> Config:
         services.append(Service(
             name=name, compose_dir=cdir, service=svc_name, compose_files=files, mode=mode,
             cooldown=parse_duration(s["cooldown"]) if "cooldown" in s else st.default_cooldown,
-            group=group, rollback=bool(s.get("rollback", True)), health_timeout=ht, pre_hook=hooks,
+            group=group, rollback=bool(s.get("rollback", True)), health_timeout=ht,
             window=parse_window(s["window"] if "window" in s else st.window),
             smoke_url=smoke_url, smoke_expect=list(smoke_expect), advisories=list(advisories),
             min_severity=min_sev, security_policy=policy, release_notes=rn,
@@ -495,7 +487,7 @@ def load_config(path: str) -> Config:
 
 
 def check_trusted_file(path: str) -> None:
-    """Quand on tourne en root, la configuration (qui contient des commandes) doit appartenir à root
+    """Quand on tourne en root, la configuration (qui désigne les piles compose pilotées en root) doit appartenir à root
     et ne pas être modifiable par un autre compte."""
     if os.geteuid() != 0:
         return
@@ -1142,14 +1134,6 @@ class Updater:
     def apply(self, unit: str, todo: list[Eval]) -> bool:
         names = ", ".join(e.svc.name for e in todo)
         self.log(f"mise à jour de {unit} : {names}")
-        for e in todo:
-            for cmd in e.svc.pre_hook:
-                r = self.run.run(cmd, mutating=True, timeout=1800)
-                if r.rc != 0:
-                    msg = f"{unit}: crochet avant mise à jour en échec ({shlex.join(cmd[:1])}), rien n'a été modifié"
-                    self.log(msg)
-                    self.notifier.send(f"Mise à jour annulée : {unit}", msg, "error")
-                    return False
         targets: dict[str, tuple[str, str, str]] = {}
         old_ids: dict[str, str] = {}
         for e in todo:
@@ -1365,10 +1349,6 @@ def validate(cfg: Config, log: Callable[[str], None] = print) -> int:
         for f in s.compose_files:
             if not os.path.isfile(f):
                 log(f"ERREUR : {s.name}: fichier compose introuvable : {f}")
-                problems += 1
-        for h in s.pre_hook:
-            if not os.access(h[0], os.X_OK):
-                log(f"ERREUR : {s.name}: crochet non exécutable : {h[0]}")
                 problems += 1
     nu = cfg.settings.notify_url_file
     if nu:

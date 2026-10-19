@@ -16,5 +16,3 @@ jobs:
         run: python3 --version
       - name: Tests (logique, faux monde Docker, bout en bout)
         run: python3 -W error::ResourceWarning -m unittest discover -s tests -v
-      - name: Syntaxe du crochet de sauvegarde
-        run: bash -n deploy/tirelire-predump.sh

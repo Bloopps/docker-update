@@ -27,7 +27,6 @@ Condition d'arrêt générale : tout comportement qui ressemble à un danger pou
 | `examples/updates.example.toml` | configuration d'exemple (placeholders à remplacer) |
 | `examples/updates.watchtower.toml` | les applications suivies par Watchtower, toutes en `notify` (placeholders à remplacer) |
 | `deploy/docker-update.service`, `.timer` | unités `systemd` (le service démarre en mode **`check`**, qui n'applique rien) |
-| `deploy/tirelire-predump.sh` | sauvegarde de la base avant une mise à jour de la tirelire (crochet) |
 | `tests/` | 167 tests (`python3 -m unittest discover -s tests`) |
 
 Lis d'abord `README.md` (fonctionnement, sous-commandes, modèle de menace, limites connues).
@@ -82,7 +81,7 @@ Produis `updates.toml` à partir de `examples/updates.example.toml` en remplaça
 | --- | --- | --- |
 | traefik, pocket-id, crowdsec | `auto` | délai 3 j, fenêtre 02:00-05:00, `advisories`, test de fumée |
 | homepage, beszel, goaccess | `auto` | délai 3 j, `window = ""` |
-| tirelire (migrate, egress, web, admin, sync) | `auto`, **groupe** `tirelire` | délai 1 j, `rollback = false`, crochet `pre_hook` **sur un seul service** (le premier) |
+| tirelire (migrate, egress, web, admin, sync) | `auto`, **groupe** `tirelire` | délai 1 j, `rollback = false` (la sauvegarde de la base se gère ailleurs) |
 | immich, portainer, wg-easy, portabase | `notify` | l'outil prévient, l'utilisateur applique avec `now` |
 | watchtower, socket-proxy, la base `tirelire-db` | **ne pas les mettre** | |
 
@@ -98,7 +97,6 @@ Demande l'accord, puis :
 ```sh
 sudo install -d -m 755 -o root -g root /etc/docker-update
 sudo install -m 755 -o root -g root docker-update.py /usr/local/sbin/docker-update
-sudo install -m 750 -o root -g root deploy/tirelire-predump.sh /usr/local/sbin/tirelire-predump.sh
 sudo install -m 644 -o root -g root updates.toml /etc/docker-update/updates.toml        # la configuration validée
 sudo install -m 644 -o root -g root deploy/docker-update.service deploy/docker-update.timer /etc/systemd/system/
 ```

@@ -22,7 +22,6 @@ Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
   l'image précédente de chaque service, et alerte. Désactivable par service (`rollback = false`) quand une base a migré.
 - **Fenêtre horaire** (`02:00-05:00`) : on observe tout le temps, on n'applique que dans la fenêtre. Un avis *critique* l'ignore.
 - **Groupes** : plusieurs services d'une même image mis à jour ensemble, dans l'ordre du fichier.
-- **Crochet avant mise à jour** (ex. sauvegarde de la base) : s'il échoue, rien n'est touché.
 - **Modes par service** : `auto` (applique), `notify` (prévient, vous appliquez), `manual` (ignore).
 - **Notifications Discord** (ntfy ou JSON possibles), sans mention possible, sans doublons, sans jamais journaliser l'URL.
 - **Signal de vie** optionnel (par ex. une URL « push » d'Uptime Kuma) pour savoir si l'outil lui-même s'arrête en silence.
@@ -45,7 +44,7 @@ Options globales : `--config CHEMIN`, `--dry-run` (aucune commande qui modifie q
 ## Configuration
 
 Fichier TOML, voir [`examples/updates.example.toml`](examples/updates.example.toml) (placeholders à remplacer).
-Il doit appartenir à `root` et ne pas être modifiable par d'autres : il contient des commandes exécutées en root, et
+Il doit appartenir à `root` et ne pas être modifiable par d'autres : elle désigne les piles compose que l'outil pilote en root, et
 l'outil **refuse de démarrer** sinon.
 
 **`[settings]`** : `state_file`, `lock_file`, `registry_tool` (`buildx` ou `regctl`), `notify_url_file`, `notify_format`
@@ -53,7 +52,7 @@ l'outil **refuse de démarrer** sinon.
 `github_api`, `github_token_file`, `advisory_poll`, `advisory_lookback`, `version_label`.
 
 **`[[service]]`** : `name`, `compose_dir`, `service` (obligatoires) ; `compose_files`, `mode` (défaut `notify`, le plus
-prudent), `cooldown`, `group`, `rollback` (défaut `true`), `health_timeout`, `pre_hook`, `window`, `smoke_url` +
+prudent), `cooldown`, `group`, `rollback` (défaut `true`), `health_timeout`, `window`, `smoke_url` +
 `smoke_expect`, `advisories`, `min_severity` (défaut `high`), `security_cooldown` (défaut `6h`), `security_policy`
 (`fast` ou `alert`), `release_notes` (défaut `false`), `release_notes_repos`, `release_notes_ignore`. Les fautes de
 frappe dans les clés sont refusées.

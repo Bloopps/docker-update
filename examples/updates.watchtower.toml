@@ -29,7 +29,7 @@ advisory_lookback  = "30d"
 # github_token_file = "/etc/docker-update/github_token"   # optionnel : jeton SANS aucun droit (relève la limite de débit)
 
 # ── La tirelire : un groupe de 5 services (même image), dépôt privé : pas d'avis ni de notes lisibles ──
-# Pas de version (étiquette `main`) : aucune veille de release. rollback = false : la base migre (sauvegarde par le crochet).
+# Pas de version (étiquette `main`) : aucune veille de release. rollback = false : la base migre (sauvegarde gérée ailleurs).
 [[service]]
 name          = "tirelire-migrate"
 group         = "tirelire"
@@ -38,7 +38,6 @@ service       = "migrate"
 mode          = "notify"
 cooldown      = "1d"
 rollback      = false
-pre_hook      = [["/usr/local/sbin/tirelire-predump.sh"]]
 
 [[service]]
 name = "tirelire-egress"

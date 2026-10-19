@@ -1,6 +1,6 @@
 # /etc/docker-update/updates.toml — propriétaire root:root, mode 644 (ou 600).
 # Le script refuse de démarrer si ce fichier appartient à un autre compte ou est modifiable par d'autres :
-# il contient des commandes (pre_hook) exécutées en root.
+# il désigne les piles compose que l'outil pilote en root.
 #
 # TOUS LES CHEMINS ET NOMS DE SERVICES CI-DESSOUS SONT DES PLACEHOLDERS : l'agent doit les remplacer par
 # les valeurs réelles, relevées en lecture seule (voir AGENT.md, étape 2).
@@ -89,8 +89,7 @@ window = ""
 
 # ── La tirelire : un groupe (même image), dans l'ordre migrate -> egress -> web -> admin -> sync ──
 # rollback = false : les migrations de la base ne se défont pas. En cas d'échec, l'outil prévient et NE
-# revient PAS en arrière tout seul (une sauvegarde est faite avant, par le crochet ci-dessous).
-# Le crochet est déclaré UNE SEULE FOIS, sur le premier service du groupe.
+# revient PAS en arrière tout seul. L'outil ne sauvegarde rien : la sauvegarde de la base se gère ailleurs.
 [[service]]
 name          = "tirelire-migrate"
 group         = "tirelire"
@@ -101,7 +100,6 @@ mode          = "auto"
 cooldown      = "1d"
 window        = ""
 rollback      = false
-pre_hook      = [["/usr/local/sbin/tirelire-predump.sh"]]
 
 [[service]]
 name = "tirelire-egress"

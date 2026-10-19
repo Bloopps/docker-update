@@ -56,12 +56,10 @@ class World:
         self.compose: dict[str, dict[str, str]] = {}
         self.calls: list[list[str]] = []
         self.ups: list[tuple[str, str]] = []
-        self.hooks: list[list[str]] = []
         self.fail_up: set[str] = set()
         self.restarting: set[str] = set()
         self.fail_pull: set[str] = set()
         self.fail_registry: set[str] = set()
-        self.fail_hook: set[str] = set()
         self.dry_run = False
         self.log = lambda m: None
         self.secret_in_config = "hunter2"
@@ -148,9 +146,6 @@ class World:
             iid = self.by_ref_digest.get(src, src)
             self.tags[argv[3]] = iid
             return R(0)
-        if argv[0].startswith("/"):
-            self.hooks.append(list(argv))
-            return R(1 if argv[0] in self.fail_hook else 0)
         raise AssertionError(f"commande inattendue : {argv}")
 
 
@@ -283,8 +278,7 @@ class TestConfig(unittest.TestCase):
             (self.base(service="x;rm"), "invalide"),
             (self.base(typo=1), "inconnue"),
             (self.base(cooldown="3"), "durée"),
-            (self.base(pre_hook=[["relatif"]]), "chemin absolu"),
-            (self.base(pre_hook=["/bin/true"]), "pre_hook"),
+            (self.base(pre_hook=[["/usr/local/sbin/avant"]]), "inconnue"),    # plus de crochet : la sauvegarde se gère ailleurs
             (self.base(window="nuit"), "fenêtre"),
             (self.base(smoke_url="ftp://x"), "http"),
             (self.base(smoke_url="https://x"), "smoke_expect"),
@@ -315,7 +309,6 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(groups, {"tirelire"})
         tirelire = [s for s in cfg.services if s.group == "tirelire"]
         self.assertFalse(any(s.rollback for s in tirelire), "pas de retour arrière auto sur une base migrée")
-        self.assertEqual(sum(1 for s in tirelire if s.pre_hook), 1, "le crochet n'est déclaré qu'une fois")
         for s in cfg.services:
             self.assertIn(s.mode, ("auto", "notify"))
 
@@ -381,19 +374,17 @@ class TestCycle(Base):
     def test_order_of_operations(self):
         self.traefik()
         self.new_remote()
-        u = self.make([self.svc(pre_hook=[["/usr/local/sbin/avant"]])], settings={"default_cooldown": "0"})
+        u = self.make([self.svc()], settings={"default_cooldown": "0"})
         u.cycle(apply=True)
         kinds = []
         for c in self.world.calls:
-            if c[0] == "/usr/local/sbin/avant":
-                kinds.append("hook")
-            elif c[:2] == ["docker", "pull"]:
+            if c[:2] == ["docker", "pull"]:
                 kinds.append("pull")
             elif c[:2] == ["docker", "tag"]:
                 kinds.append("tag")
             elif "up" in c and c[:2] == ["docker", "compose"]:
                 kinds.append("up")
-        self.assertEqual(kinds, ["hook", "pull", "tag", "up"])
+        self.assertEqual(kinds, ["pull", "tag", "up"])
         up = next(c for c in self.world.calls if c[:2] == ["docker", "compose"] and "up" in c)
         for flag in ("--no-deps", "--wait", "never"):
             self.assertIn(flag, up)
@@ -494,15 +485,6 @@ class TestFailures(Base):
         self.world.restarting.add("id-" + dg(2)[7:19])  # up réussit mais le conteneur boucle
         self.assertEqual(u.cycle(apply=True), 1)
         self.assertEqual(self.world.containers[("/stack/traefik", "traefik")]["image_id"], "id-traefik-old")
-
-    def test_hook_failure_aborts_before_any_change(self):
-        u = self.go(pre_hook=[["/usr/local/sbin/avant"]])
-        self.world.fail_hook.add("/usr/local/sbin/avant")
-        self.assertEqual(u.cycle(apply=True), 1)
-        self.assertEqual(self.cmds(["docker", "pull"]), [])
-        self.assertEqual(self.world.ups, [])
-        self.assertEqual(self.world.tags["traefik:v3.6"], "id-traefik-old")
-        self.assertIn("annulée", " ".join(p[1]["content"] for p in self.posts))
 
     def test_pull_failure_aborts_before_any_change(self):
         u = self.go()
@@ -780,13 +762,11 @@ class TestDryRun(Base):
     def test_dry_run_changes_nothing(self):
         self.traefik()
         self.new_remote()
-        u = self.make([self.svc(pre_hook=[["/usr/local/sbin/avant"]])], settings={"default_cooldown": "0"},
-                      dry_run=True, persist=False)
+        u = self.make([self.svc()], settings={"default_cooldown": "0"}, dry_run=True, persist=False)
         self.assertEqual(u.cycle(apply=True), 0)
         self.assertEqual(self.cmds(["docker", "pull"]), [])
         self.assertEqual(self.cmds(["docker", "tag"]), [])
         self.assertEqual(self.world.ups, [])
-        self.assertEqual(self.world.hooks, [])
         self.assertEqual(self.posts, [])
         self.assertFalse(os.path.exists(self.state_path), "la simulation n'écrit pas l'état")
         self.assertIn("[simulation]", self.logtext())
@@ -876,14 +856,14 @@ class TestInfra(unittest.TestCase):
     def test_validate(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = du.parse_config({"settings": {"notify_url_file": os.path.join(d, "absent")}, "service": [
-                {"name": "a", "compose_dir": d, "service": "a", "pre_hook": [["/nonexistent/hook"]]},
+                {"name": "a", "compose_dir": d, "service": "a", "compose_files": ["absent.yml"]},
                 {"name": "b", "compose_dir": "/nonexistent/dir", "service": "b"}]})
             out: list[str] = []
             rc = du.validate(cfg, out.append)
             text = "\n".join(out)
             self.assertEqual(rc, 1)
             self.assertIn("introuvable", text)
-            self.assertIn("non exécutable", text)
+            self.assertIn("absent.yml", text)
             self.assertIn("AVERTISSEMENT", text)
 
 
@@ -901,11 +881,11 @@ class TestSecurityProperties(Base):
     def test_commands_never_use_a_shell(self):
         self.traefik()
         self.new_remote()
-        u = self.make([self.svc(pre_hook=[["/usr/local/sbin/avant", "arg; rm -rf /"]])], settings={"default_cooldown": "0"})
+        u = self.make([self.svc(compose_files=["a; rm -rf /.yml"])], settings={"default_cooldown": "0"})
         u.cycle(apply=True)
         for c in self.world.calls:
             self.assertIsInstance(c, list)
-        self.assertIn(["/usr/local/sbin/avant", "arg; rm -rf /"], self.world.hooks, "l'argument reste un seul argument")
+        self.assertTrue(any("/stack/traefik/a; rm -rf /.yml" in c for c in self.world.calls), "un seul argument, jamais interprété")
 
     def test_pull_is_by_digest_of_the_evaluated_image(self):
         self.traefik()
@@ -1571,7 +1551,6 @@ class TestReleaseScan(unittest.TestCase):
         tirelire = [s for s in cfg.services if s.group == "tirelire"]
         self.assertEqual(len(tirelire), 5)
         self.assertFalse(any(s.rollback for s in tirelire))
-        self.assertEqual(sum(1 for s in tirelire if s.pre_hook), 1)
         self.assertEqual({s.name for s in cfg.services if s.group == "immich"}, {"immich_server", "immich_machine_learning"})
         self.assertFalse(any(s.release_notes for s in tirelire), "tirelire : dépôt privé, pas de version")
         self.assertEqual(sum(1 for s in cfg.services if s.group == "immich" and s.release_notes), 1, "une alerte par release")

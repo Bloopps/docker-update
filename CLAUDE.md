@@ -8,7 +8,6 @@ l'hôte. Voir README.md (fonctionnement, limites) et docs/AGENT.md (procédure d
 - Tests (tous) : `python3 -W error::ResourceWarning -m unittest discover -s tests -v`
 - Un test : `python3 -m unittest tests.test_docker_update.TestSecurity.test_fast_track_waits_security_cooldown_then_applies`
   (ou `cd tests && python3 -m unittest test_docker_update.TestSecurity`)
-- Syntaxe du crochet : `bash -n deploy/tirelire-predump.sh`
 
 ## Règles du projet
 
