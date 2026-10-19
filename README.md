@@ -32,13 +32,20 @@ sudo docker-update --config /etc/docker-update/updates.toml --dry-run check
 sudo systemctl daemon-reload && sudo systemctl enable --now docker-update.timer
 ```
 
-**`init` (à venir, phase 7).** La commande `docker-update init` contrôlera d'abord toute l'installation, en lecture seule : Docker et
-`compose`, `regctl` ou `buildx`, binaire, dossiers et droits (configuration, état, verrou), fichiers du webhook et du jeton, unités
-systemd et minuteur (avec leur mode `check` ou `run`), accès au registre et à GitHub. Chaque point s'affiche ✓ ou ✗ avec la commande
-qui le corrige, et `init --check` rejoue ces contrôles à tout moment. Ensuite, elle découvre les conteneurs Compose qui tournent, pose
-les questions service par service, écrit `updates.toml` après aperçu et confirmation, propose `set-webhook`, puis lance `validate`.
-Elle ne pose pas elle-même le binaire ni les unités : elle dit ce qui manque. Elle n'existe pas encore dans le binaire : d'ici là,
-suivre les commandes ci-dessus et rédiger `updates.toml` à la main à partir de `examples/`.
+**`docker-update init`** fait le reste. Il contrôle d'abord toute l'installation, en lecture seule : Docker et `compose`, `regctl` ou
+`buildx`, binaire, dossiers et droits (configuration, état, verrou), fichiers du webhook et du jeton, unités systemd et minuteur (avec leur
+mode `check` ou `run`), accès au registre et à GitHub. Chaque point s'affiche ✓, ✗ (bloquant : `init` s'arrête) ou ⚠ (à corriger, n'empêche
+pas) avec la commande qui le corrige ; `init --check` rejoue ces contrôles seuls, à tout moment (code 0 si tout est ✓, 1 sinon).
+Ensuite il relève les conteneurs Compose qui tournent (lecture seule, jamais leur environnement), vérifie que l'outil retrouvera chacun
+(même nom de projet que `docker compose config`, même conteneur pour `compose ps`), pose les questions service par service (suivre ? mode,
+groupe, nettoyage, dépôt GitHub des avis, notes de release), affiche le fichier complet, l'écrit après confirmation (droits 644), puis propose
+`set-webhook`. Il ne pose pas lui-même le binaire ni les unités : il dit ce qui manque. **Il ne lance aucune mise à jour et ne touche à aucun
+conteneur.** Par défaut le mode est `notify` ; `auto` demande de taper `auto` pour chaque service ou groupe. Écartés par défaut :
+Watchtower, le proxy du socket Docker et les bases de données (postgres, mysql, mariadb, mongo, redis, valkey, memcached), avec la raison.
+
+Version non interactive : `init --yes [--mode notify|manual|auto] [--include nom,…] [--exclude nom,…]` (pas de groupes ; seuls les dépôts
+d'avis certains de la table intégrée sont repris). Un fichier existant n'est jamais écrasé : `init --force` le remplace après sauvegarde.
+`init --skip-checks` ne passe que les contrôles non bloquants.
 
 L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n'a pas validé le résultat et basculé sur
 `run`. La procédure complète, avec les critères d'acceptation de chaque étape et le retour arrière, est dans
@@ -87,6 +94,7 @@ L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n
 | `status` | état mémorisé |
 | `set-webhook` | enregistre l'URL du webhook Discord (saisie masquée ou entrée standard, fichier `600`, jamais affichée) |
 | `notify-test` | envoie un message de test (vérifie le webhook) |
+| `init [--yes] [--check] [--force]` | vérifie l'installation, relève les conteneurs Compose qui tournent et crée la configuration (voir Installation) |
 | `list` | tableau des services configurés : groupe, mode, délai, fenêtre, veille (avis, notes), pause ; lecture seule |
 | `add NOM --compose-dir D --service S [options]` | ajoute **un** service au fichier de configuration (voir ci-dessous) |
 | `delete NOM… [--group G] [--keep-state]` | retire des services du fichier (voir ci-dessous) |
@@ -98,7 +106,7 @@ mise en forme. À chaque écriture : aperçu (diff), confirmation (`--yes` pour 
 l'ancien fichier en `updates.toml.bak-AAAAMMJJ-HHMMSS` (mêmes droits), écriture atomique avec le même propriétaire et les mêmes droits,
 relecture et validation du résultat (l'ancien fichier est remis en place si elle échoue), sous le verrou des passages.
 
-- `add` : options `--compose-file` (répétable), `--mode` (défaut **`notify`**, jamais `auto` sans que vous le disiez), `--cooldown`, `--window`,
+- `add` : `--container NOM|ID` reprend dossier, service et fichiers compose d'un conteneur qui tourne (après la même vérification que `init`) ; options `--compose-file` (répétable), `--mode` (défaut **`notify`**, jamais `auto` sans que vous le disiez), `--cooldown`, `--window`,
   `--group`, `--advisories dépôt,…`, `--release-notes`, `--release-notes-repos`, `--release-notes-ignore`, `--cleanup=false`, `--smoke-url`,
   `--smoke-expect`, `--min-severity`, `--security-cooldown`, `--security-policy`, `--health-timeout`. Ce qui manque (dossier compose, service)
   est demandé sur l'entrée standard. Le nouveau bloc est inséré à la fin, ou après le dernier membre de son groupe (qui lui donne ses

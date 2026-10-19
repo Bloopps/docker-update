@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -42,12 +43,32 @@ type Env struct {
 	IsTerminal func(io.Reader) bool
 	// ReadHidden lit une ligne sans l'afficher (défaut : terminal sans écho).
 	ReadHidden func(prompt string) (string, error)
+	// NewRunner construit l'exécuteur de commandes de `init` (défaut : dockerx.Exec ; lecture seule pour la découverte).
+	NewRunner func(dry bool, log func(string)) dockerx.Runner
+	// Defaults : réglages écrits par `init` dans [settings] (défaut : chemins de l'unité systemd fournie).
+	Defaults func() config.Settings
+	// Euid, UnitDir, Binary, Getenv, Dial : ce que les contrôles d'installation lisent (remplacés dans les tests).
+	Euid    func() int
+	UnitDir string
+	Binary  string
+	Getenv  func(string) string
+	Dial    func(addr string) error
 	// Load relit la configuration écrite par add / delete (défaut : config.Load).
 	Load func(path string) (*config.Config, error)
 	// Now donne l'heure (nom des sauvegardes) ; défaut : time.Now.
 	Now func() time.Time
 	// NewEngine construit le cœur (défaut : updater.New).
+	in        *bufio.Reader
+	inSrc     io.Reader
 	NewEngine func(cfg *config.Config, run dockerx.Runner, n *notify.Notifier, st *state.State, log func(string), noSave bool) Engine
+}
+
+// reader renvoie le lecteur partagé de l'entrée standard : plusieurs invites se suivent sur le même tube sans rien perdre.
+func (e *Env) reader() *bufio.Reader {
+	if e.in == nil || e.inSrc != e.Stdin {
+		e.in, e.inSrc = bufio.NewReader(e.Stdin), e.Stdin
+	}
+	return e.in
 }
 
 // DefaultEnv est l'environnement réel.
@@ -80,6 +101,33 @@ func (e *Env) fill() {
 				return "", errors.New("pas de terminal")
 			}
 			return readHidden(f, e.Stderr, prompt)
+		}
+	}
+	if e.NewRunner == nil {
+		e.NewRunner = func(dry bool, log func(string)) dockerx.Runner { return &dockerx.Exec{Dry: dry, Log: log} }
+	}
+	if e.Defaults == nil {
+		e.Defaults = initDefaults
+	}
+	if e.Euid == nil {
+		e.Euid = os.Geteuid
+	}
+	if e.UnitDir == "" {
+		e.UnitDir = "/etc/systemd/system"
+	}
+	if e.Binary == "" {
+		e.Binary, _ = os.Executable()
+	}
+	if e.Getenv == nil {
+		e.Getenv = os.Getenv
+	}
+	if e.Dial == nil {
+		e.Dial = func(addr string) error {
+			c, err := net.DialTimeout("tcp", addr, 5*time.Second)
+			if err == nil {
+				c.Close()
+			}
+			return err
 		}
 	}
 	if e.Load == nil {
@@ -146,6 +194,9 @@ func Main(args []string, env *Env) int {
 }
 
 func execute(g globals, cmd string, sub subArgs, env *Env, log func(string)) (int, error) {
+	if cmd == "init" { // la configuration n'existe pas encore : init la crée
+		return initCmd(env, g, sub, log)
+	}
 	if !g.allowUntrusted {
 		if err := env.CheckTrusted(g.config); err != nil {
 			return 0, err
@@ -279,7 +330,7 @@ func setWebhook(cfg *config.Config, dryRun bool, env *Env, log func(string)) err
 		if env.IsTerminal(env.Stdin) {
 			return env.ReadHidden("URL du webhook (la saisie reste invisible) : ")
 		}
-		line, err := bufio.NewReader(env.Stdin).ReadString('\n')
+		line, err := env.reader().ReadString('\n')
 		if err != nil && err != io.EOF {
 			return "", err
 		}

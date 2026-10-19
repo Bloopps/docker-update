@@ -74,7 +74,8 @@ cd <dossier> && docker compose -f <fichiers…> config --format json | jq -r .na
 (il l'ignorera, sans rien créer) : note-le et ne mets pas ce service en `auto`. **N'affiche jamais** la sortie complète de
 `config` : elle contient les variables d'environnement.
 
-Produis `updates.toml` à partir de `examples/updates.example.toml` en remplaçant TOUS les placeholders (`/home/ubuntu/...`,
+Le plus simple : `docker-update init` (voir README, « Installation ») fait ce relevé, les contrôles ci-dessus et pose les questions ;
+il écrit `updates.toml` sans toucher à un conteneur. Relis son aperçu avec l'utilisateur. À la main, sinon : produis `updates.toml` à partir de `examples/updates.example.toml` en remplaçant TOUS les placeholders (`/home/ubuntu/...`,
 `EXEMPLE.fr`, noms de services). Règles de répartition à respecter :
 
 | Service | Mode | Remarques |

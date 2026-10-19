@@ -260,7 +260,7 @@ func contains(list []string, s string) bool {
 func value(v tomlmini.Value) (string, error) {
 	switch v.Kind {
 	case tomlmini.String:
-		return quote(v.Str), nil
+		return Quote(v.Str), nil
 	case tomlmini.Int:
 		return strconv.FormatInt(v.Int, 10), nil
 	case tomlmini.Bool:
@@ -277,8 +277,8 @@ func value(v tomlmini.Value) (string, error) {
 	return "[" + strings.Join(parts, ", ") + "]", nil
 }
 
-// quote écrit une chaîne TOML entre guillemets ; les caractères de contrôle sont échappés (\uXXXX).
-func quote(s string) string {
+// Quote écrit une chaîne TOML entre guillemets ; les caractères de contrôle sont échappés (\uXXXX).
+func Quote(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')
 	for _, r := range s {

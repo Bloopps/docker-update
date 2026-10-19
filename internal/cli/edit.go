@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Bloopps/docker-update/internal/config"
+	"github.com/Bloopps/docker-update/internal/discover"
 	"github.com/Bloopps/docker-update/internal/state"
 	"github.com/Bloopps/docker-update/internal/textutil"
 	"github.com/Bloopps/docker-update/internal/tomledit"
@@ -27,7 +28,7 @@ type prompter struct {
 }
 
 func newPrompter(env *Env) *prompter {
-	return &prompter{r: bufio.NewReader(env.Stdin), out: env.Stdout}
+	return &prompter{r: env.reader(), out: env.Stdout}
 }
 
 var errNoAnswer = errors.New("pas de réponse sur l'entrée standard")
@@ -427,6 +428,31 @@ func lastValue(sub subArgs, flag string) (string, bool) {
 	return v[len(v)-1], true
 }
 
+// findContainer retrouve un conteneur qui tourne par son nom ou le début de son identifiant, et vérifie que l'outil le retrouvera.
+func findContainer(env *Env, g globals, ref string) (discover.Container, string) {
+	run := env.NewRunner(g.dryRun, func(string) {})
+	all, err := discover.Running(run)
+	if err != nil {
+		return discover.Container{}, err.Error()
+	}
+	var hit []discover.Container
+	for _, c := range all {
+		if c.Name == ref || (len(ref) >= 4 && strings.HasPrefix(c.ID, ref)) {
+			hit = append(hit, c)
+		}
+	}
+	switch len(hit) {
+	case 0:
+		return discover.Container{}, fmt.Sprintf("aucun conteneur Compose en marche ne s'appelle ou ne commence par %s", textutil.CleanText(ref, 64))
+	case 1:
+		if why, ok := discover.Verify(run, hit[0]); !ok {
+			return discover.Container{}, why
+		}
+		return hit[0], ""
+	}
+	return discover.Container{}, fmt.Sprintf("%s désigne plusieurs conteneurs : préciser le nom complet", textutil.CleanText(ref, 64))
+}
+
 func addCmd(env *Env, g globals, sub subArgs, cfg *config.Config, log func(string)) (int, error) {
 	name := sub.names[0]
 	return withConfigLock(cfg, g, log, func(data []byte) (int, error) {
@@ -456,6 +482,27 @@ func addCmd(env *Env, g globals, sub subArgs, cfg *config.Config, log func(strin
 		for _, t := range doc.Arrays["service"] {
 			if gv, ok := t.Get("group"); ok && gv.PyStr() == name {
 				return fail("%s est déjà un nom de groupe", name)
+			}
+		}
+		if v, ok := lastValue(sub, "--container"); ok {
+			c, why := findContainer(env, g, v)
+			if why != "" {
+				return fail("--container : %s", why)
+			}
+			set := func(flag string, vals ...string) {
+				if len(sub.values[flag]) == 0 && len(vals) > 0 {
+					sub.values[flag] = vals
+				}
+			}
+			set("--compose-dir", c.WorkingDir)
+			set("--service", c.Service)
+			set("--compose-file", discover.ComposeFiles(c)...)
+			if repo, sure := discover.SuggestRepo(c.Image); repo != "" && len(sub.values["--advisories"]) == 0 {
+				note := ""
+				if !sure {
+					note = " (à confirmer)"
+				}
+				log(fmt.Sprintf("Dépôt suggéré pour les avis%s : %s (l'ajouter avec --advisories %s ; rien n'est écrit sans votre demande).", note, repo, repo))
 			}
 		}
 		need := func(flag, question string) (string, bool) {

@@ -125,14 +125,15 @@ var subcommands = map[string]subSpec{
 	"now":         {names: "+", flags: []string{"--yes"}},
 	"version":     {},
 	"list":        {},
+	"init":        {flags: []string{"--yes", "--check", "--force", "--skip-checks"}, valued: []string{"--mode", "--include", "--exclude"}},
 	"delete":      {names: "*", flags: []string{"--keep-state", "--yes"}, valued: []string{"--group"}},
 	"add": {names: "1", flags: []string{"--release-notes", "--yes", "--first"}, optBool: []string{"--cleanup"},
 		valued: []string{"--compose-dir", "--service", "--compose-file", "--mode", "--cooldown", "--window", "--group",
-			"--advisories", "--min-severity", "--security-cooldown", "--security-policy", "--health-timeout",
+			"--container", "--advisories", "--min-severity", "--security-cooldown", "--security-policy", "--health-timeout",
 			"--release-notes-repos", "--release-notes-ignore", "--smoke-url", "--smoke-expect", "--after"}},
 }
 
-var commandOrder = []string{"validate", "check", "run", "now", "hold", "unhold", "status", "notify-test", "set-webhook", "list", "add", "delete", "version"}
+var commandOrder = []string{"validate", "check", "run", "now", "hold", "unhold", "status", "notify-test", "set-webhook", "init", "list", "add", "delete", "version"}
 
 type subArgs struct {
 	names  []string
@@ -221,6 +222,7 @@ Commandes :
   status              affiche l'état mémorisé
   notify-test         envoie un message de test
   set-webhook         enregistre l'URL du webhook (saisie masquée ou entrée standard, jamais en argument)
+  init                vérifie l'installation, puis crée la configuration à partir des conteneurs qui tournent (init --check : vérifications seules)
   list                tableau des services configurés (lecture seule)
   add NOM [options]   ajoute un service au fichier de configuration (aperçu, confirmation, sauvegarde, validation)
   delete NOM...       retire des services du fichier (ou --group G) ; ne touche à aucun conteneur ni image
