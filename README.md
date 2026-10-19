@@ -2,7 +2,7 @@
 
 Mises à jour automatiques d'images **Docker Compose**, sans conteneur qui détienne le droit de créer d'autres conteneurs.
 
-Un outil en Python (bibliothèque standard seulement, Python ≥ 3.11) qui tourne **sur l'hôte**, lancé par un minuteur `systemd`.
+Un outil en Go (bibliothèque standard seulement), livré en **un seul binaire statique**, qui tourne **sur l'hôte**, lancé par un minuteur `systemd`.
 Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
 
 ## Installation
@@ -42,7 +42,7 @@ suivre les commandes ci-dessus et rédiger `updates.toml` à la main à partir d
 
 L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n'a pas validé le résultat et basculé sur
 `run`. La procédure complète, avec les critères d'acceptation de chaque étape et le retour arrière, est dans
-[`docs/AGENT.md`](docs/AGENT.md). Le script Python reste en place tant que la phase de bascule n'est pas faite.
+[`docs/AGENT.md`](docs/AGENT.md).
 
 ## Ce qu'il fait
 
@@ -209,22 +209,23 @@ vôtre (ex. 9.0.1 alors que vous suivez 8.1) est signalée aussi. Une note qui n
 ## Tests et qualité
 
 ```sh
-python3 -m unittest discover -s tests -v      # 269 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
+go vet ./... && go test -race -count=1 ./...
 ```
 
-Les tests de bout en bout lancent le **vrai programme** en sous-processus, avec un faux exécutable `docker` placé dans le
-`PATH` et un vrai serveur HTTP local pour les avis de sécurité.
+Les tests unitaires couvrent chaque paquet. Les tests de **bout en bout** (`e2e/`) lancent le **vrai binaire** en sous-processus, avec un faux
+exécutable `docker` (`testdata/fakedocker`) placé dans le `PATH` et de vrais serveurs HTTP locaux (avis, releases, webhook). Aucun test
+n'appelle un vrai Docker, GitHub ou Discord. La CI vérifie aussi le formatage (`gofmt`), compile pour linux amd64 et arm64 et fait un fuzz
+court du lecteur TOML.
 
-Un **test de mutation** manuel a introduit 38 défauts un par un (délai ignoré, tirage par étiquette, retour arrière absent,
-fenêtre ignorée, jeton journalisé, avis retiré pris en compte, plage illisible comptée comme corrigée…). Les 38 sont
-détectés ; il a aussi révélé trois angles morts des tests, comblés, et un vrai défaut de code (retour arrière de groupe).
-Il n'est pas rejoué par la CI.
-Un troisième, sur le nettoyage des images, a introduit 12 défauts (suppression forcée, après un échec, en simulation,
-réglage par service ignoré…) : les 12 sont détectés.
-D'autres, sur l'échec sans retour arrière (9), les conteneurs arrêtés (6), le rapprochement avis / notes (12), le rapport
-unique et la commande `set-webhook` (20) et le scan ciblé (10), l'ont été de même.
-Un second test de mutation, sur la veille des notes de release, a introduit 33 défauts (accélération par une note, pré-version
-non ignorée, mot `security` seul pris pour fort, `@everyone` non neutralisé, doublon d'alerte…) : 32 détectés après
-correction de 5 angles morts des tests ; le dernier est équivalent (valeur par défaut jamais lue).
+Le code vient d'une réécriture d'une version Python (dernier état : commit `50952f1`), vérifiée contre elle par un test différentiel
+(mêmes scénarios, mêmes sorties, état et requêtes) avant sa suppression. `docs/PORTAGE.md` garde l'inventaire des tests portés, les écarts
+et les propositions d'amélioration non appliquées.
+
+**Tests de mutation manuels.** Défauts introduits un par un dans le code Go (suite relancée à chaque fois, source restaurée ensuite), 57 au
+total : délai de sécurité ou fenêtre ignorés, tirage par étiquette, note de release qui accélère, pré-version ou signal faible mal
+traités, alertes non dédoublonnées, `@everyone` non neutralisé, jeton ou URL journalisés, conteneur arrêté touché, nettoyage forcé ou après
+un échec, `check NOM` ignoré, une sélection qui purge l'état des autres, droits ou hôte du webhook, budget du rapport… 56 sont
+détectés (54 d'emblée, 2 après l'ajout d'un test : pause d'un groupe, simulation qui n'attend pas) et 1 est équivalent (une garde
+redondante dans `security.go`). Ils ne sont pas rejoués par la CI ; le détail est dans `docs/PORTAGE.md`.
 
 Licence : à choisir par le propriétaire du dépôt.

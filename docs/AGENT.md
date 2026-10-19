@@ -23,28 +23,28 @@ Condition d'arrêt générale : tout comportement qui ressemble à un danger pou
 
 | Fichier | Rôle |
 | --- | --- |
-| `docker-update.py` | l'outil (Python ≥ 3.11, bibliothèque standard) |
+| `cmd/docker-update`, `internal/` | l'outil (Go, bibliothèque standard seulement) : un binaire statique |
 | `examples/updates.example.toml` | configuration d'exemple (placeholders à remplacer) |
 | `examples/updates.watchtower.toml` | les applications suivies par Watchtower, toutes en `notify` (placeholders à remplacer) |
 | `deploy/docker-update.service`, `.timer` | unités `systemd` (le service démarre en mode **`check`**, qui n'applique rien) |
-| `tests/` | 269 tests (`python3 -m unittest discover -s tests`) |
+| `e2e/`, `testdata/fakedocker/` | tests de bout en bout : le vrai binaire avec un faux `docker` |
 
 Lis d'abord `README.md` (fonctionnement, sous-commandes, modèle de menace, limites connues).
 
 ## 2. Étape 1 — Pré-vérifications (lecture seule)
 
 ```sh
-python3 --version                                   # >= 3.11 requis (tomllib)
+uname -m                                            # x86_64 (amd64) ou aarch64 (arm64) : le binaire existe pour les deux
 docker --version ; docker compose version ; docker buildx version
 docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}'
 ```
 
-Teste l'outil lui-même sans rien installer, depuis le dépôt cloné :
+Teste l'outil lui-même sans rien installer, depuis le dépôt cloné (Go 1.27 ou plus récent) :
 
 ```sh
-python3 -m unittest discover -s tests 2>&1 | tail -5
+go test -count=1 ./... 2>&1 | tail -15
 ```
-**Attendu : « OK », 269 tests.** Les tests ne créent que des fichiers temporaires et un serveur HTTP local sur `127.0.0.1`.
+**Attendu : « ok » pour chaque paquet, aucun « FAIL ».** Les tests ne créent que des fichiers temporaires et des serveurs HTTP locaux sur `127.0.0.1` ; ils n'appellent jamais le vrai Docker.
 Si un test échoue, ne continue pas : donne la sortie.
 
 Vérifie que la lecture du digest distant fonctionne **depuis ce serveur** (c'est la commande exacte que l'outil utilise) :
@@ -68,9 +68,9 @@ done
 Pour chaque service retenu, **contrôle que l'outil retrouvera bien le même conteneur** :
 
 ```sh
-cd <dossier> && docker compose -f <fichiers…> config --format json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("name"))'
+cd <dossier> && docker compose -f <fichiers…> config --format json | jq -r .name
 ```
-Le nom affiché **doit être identique** à la valeur `projet=` du conteneur. S'il diffère, l'outil ne retrouvera pas le conteneur
+(`jq` doit être installé.) Le nom affiché **doit être identique** à la valeur `projet=` du conteneur. S'il diffère, l'outil ne retrouvera pas le conteneur
 (il l'ignorera, sans rien créer) : note-le et ne mets pas ce service en `auto`. **N'affiche jamais** la sortie complète de
 `config` : elle contient les variables d'environnement.
 
@@ -96,7 +96,7 @@ Demande l'accord, puis :
 
 ```sh
 sudo install -d -m 755 -o root -g root /etc/docker-update
-sudo install -m 755 -o root -g root docker-update.py /usr/local/sbin/docker-update
+sudo install -m 755 -o root -g root docker-update /usr/local/sbin/docker-update      # le binaire compilé (voir README, « Installation »)
 sudo install -m 644 -o root -g root updates.toml /etc/docker-update/updates.toml        # la configuration validée
 sudo install -m 644 -o root -g root deploy/docker-update.service deploy/docker-update.timer /etc/systemd/system/
 ```

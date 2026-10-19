@@ -1,10 +1,7 @@
-__pycache__/
-*.pyc
 *.tmp
 .state-*
 # jamais de secret ni d'état local dans le dépôt
 discord_webhook
-heartbeat_url
 github_token
 state.json
 config.json

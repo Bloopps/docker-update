@@ -1,7 +1,7 @@
 # Portage Python → Go : suivi
 
 Mission de référence : `docs/PROMPT-reecriture-go.md`. Le script `docker-update.py` et ses tests sont la spécification exécutable :
-aucun changement de comportement pendant le portage (phases 0 à 6). En cas de doute, **le Python fait foi**.
+aucun changement de comportement pendant le portage (phases 0 à 6). En cas de doute, **le Python fait foi** : il a été supprimé en phase 6 mais reste lisible dans l'historique git (dernier état : commit `50952f1`, `git show 50952f1:docker-update.py`).
 
 ## 1. Version de Go retenue
 
@@ -22,7 +22,7 @@ aucun changement de comportement pendant le portage (phases 0 à 6). En cas de d
 | 3 | `state`, `notify` (Notifier, Report, webhook), `github`, `smoke`, `dockerx` | fait |
 | 4 | `updater` (evaluate, security, release notes, apply, cleanup, cycle, now, select, status) + `fakeworld` | fait |
 | 5 | `cli` + `main`, parité bout en bout (`DU_BIN`), test différentiel | fait |
-| 6 | Bascule : suppression du Python, docs, unité systemd, mutation manuelle | à faire |
+| 6 | Bascule : suppression du Python, faux `docker` en Go (`testdata/fakedocker`) et tests `e2e/`, docs, mutation manuelle | fait, sauf récapitulatif des propositions et vérification §10 |
 | 7 | `init`, `add`, `delete`, `list` | à faire |
 
 Ajustements au plan : aucun pour l'instant. Le fuzz court (10 s) du lecteur TOML est dans la CI depuis la phase 2.
@@ -295,25 +295,25 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestManualScan | `test_check_without_notify_still_sends_nothing` | 4 et 5 | internal/updater, cli : `TestManualScan_CheckWithoutNotifyStillSendsNothing` | fait |
 | test_docker_update.py | TestManualScan | `test_check_notify_without_a_webhook_fails_loudly` | 4 et 5 | internal/updater, cli : `TestManualScan_CheckNotifyWithoutAWebhookFailsLoudly` | fait |
 | test_docker_update.py | TestManualScan | `test_status_rows` | 4 et 5 | internal/updater, cli : `TestManualScan_StatusRows` | fait |
-| test_e2e.py | E2E | `test_full_life` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | E2E | `test_old_image_is_removed_after_a_successful_update_only` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | E2E | `test_cleanup_can_be_turned_off` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | E2E | `test_check_and_run_accept_names` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | E2E | `test_stopped_container_is_left_alone` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | E2E | `test_failure_alerts_without_rollback_and_exits_1` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | E2E | `test_hold_then_status` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | E2E | `test_bad_config_and_unknown_name` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | Advisories | `test_confirmed_fix_is_applied_despite_the_long_cooldown` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | Advisories | `test_candidate_still_vulnerable_waits_the_normal_delay` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | Advisories | `test_check_does_not_pull_even_with_an_advisory` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | Advisories | `test_unreachable_api_is_not_fatal` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | ReleaseNotes | `test_alert_is_sent_once_and_nothing_is_applied` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | ReleaseNotes | `test_check_reports_but_sends_nothing` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | ReleaseNotes | `test_missing_repository_and_unreachable_api_are_not_errors` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | ReleaseNotes | `test_unreadable_version_gives_one_alert_and_no_request` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | ReleaseNotes | `test_validate_refuses_unknown_and_incomplete_release_keys` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | OneReport | `test_update_and_release_alert_arrive_in_a_single_post` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
-| test_e2e.py | SetWebhook | `test_set_webhook_through_stdin` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | E2E | `test_full_life` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | E2E | `test_old_image_is_removed_after_a_successful_update_only` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | E2E | `test_cleanup_can_be_turned_off` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | E2E | `test_check_and_run_accept_names` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | E2E | `test_stopped_container_is_left_alone` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | E2E | `test_failure_alerts_without_rollback_and_exits_1` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | E2E | `test_hold_then_status` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | E2E | `test_bad_config_and_unknown_name` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | Advisories | `test_confirmed_fix_is_applied_despite_the_long_cooldown` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | Advisories | `test_candidate_still_vulnerable_waits_the_normal_delay` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | Advisories | `test_check_does_not_pull_even_with_an_advisory` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | Advisories | `test_unreachable_api_is_not_fatal` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | ReleaseNotes | `test_alert_is_sent_once_and_nothing_is_applied` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | ReleaseNotes | `test_check_reports_but_sends_nothing` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | ReleaseNotes | `test_missing_repository_and_unreachable_api_are_not_errors` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | ReleaseNotes | `test_unreadable_version_gives_one_alert_and_no_request` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | ReleaseNotes | `test_validate_refuses_unknown_and_incomplete_release_keys` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | OneReport | `test_update_and_release_alert_arrive_in_a_single_post` | 5 | `e2e/e2e_test.go` | fait |
+| test_e2e.py | SetWebhook | `test_set_webhook_through_stdin` | 5 | `e2e/e2e_test.go` | fait |
 
 Total : 232 tests Python distincts.
 
@@ -323,7 +323,7 @@ Tests ajoutés par le portage (absents du Python) :
 | --- | --- |
 | `internal/cli` : `TestNotifyTestSendsAMessageAndNeverPrintsTheURL`, `TestValidateAndSetWebhookDoNotTakeTheLock`, `TestSetWebhookReadsOnlyTheFirstLineOfStdin`, `TestStateErrorExitsWith1`, `TestUnknownNameExitsWith1` | codes de sortie, verrou et URL du webhook : propriétés que le Python ne testait que de bout en bout |
 | `internal/cli` : `TestUsageErrors`, `TestOptionPrefixesAndEqualsForm`, `TestHelpAndVersion` | parité d'`argparse` : abréviations uniques, forme `--option=valeur`, options globales avant la commande, code 2 |
-| `tests/test_differential.py` (14 scénarios, `DU_BIN`) | exécute le script Python et le binaire Go sur le même faux Docker et le même faux serveur HTTP, compare codes, sorties, état, requêtes et corps envoyés |
+| `tests/test_differential.py` (14 scénarios, `DU_BIN`) ; **supprimé avec le Python** (dernier état : commit `50952f1`) | exécute le script Python et le binaire Go sur le même faux Docker et le même faux serveur HTTP, compare codes, sorties, état, requêtes et corps envoyés |
 | `internal/updater` : `TestExtra_HoldOfAGroupPausesEveryMember` | mutation : ignorer la pause d'un groupe (`held`) survivait à toute la suite Python |
 | `internal/updater` : `TestExtra_DryRunNeverWaitsNorProbes` | mutation : en simulation, `up` attendait et sondait quand même |
 | `internal/updater` : `TestExtra_AnAlertWhoseDeliveryFailedIsNotSentAgain` | caractérise le comportement du Python (proposition 3) |
@@ -338,8 +338,8 @@ Mutation manuelle de la phase 6 (23 défauts de plus, un à la fois, `go test ./
 fichier webhook, hôte du webhook et URL générique non validés, URL du webhook et jeton GitHub journalisés, message Discord non borné,
 signal faible pris pour fort, dédoublonnage des alertes (fortes et faibles) supprimé, nettoyage forcé (`-f`) ou après un échec, échec non
 mémorisé, sélection `check NOM` ignorée (noms et groupes), bornes des motifs, `release_notes_ignore` ignoré, pré-version et brouillon non
-ignorés, et une note de release qui accélère la mise à jour. Total Go : 57 défauts introduits (phases 4 et 6), tous détectés après les 2
-tests ajoutés, plus 1 équivalent documenté. Rejouer : voir `docs/PORTAGE.md` ci-dessus (copier le dépôt, un défaut à la fois) ; les scripts ne sont pas versionnés.
+ignorés, et une note de release qui accélère la mise à jour. Total Go : 57 défauts introduits (phases 4 et 6) : 56 détectés (dont 2 après l'ajout
+d'un test) et 1 équivalent documenté. Rejouer : voir `docs/PORTAGE.md` ci-dessus (copier le dépôt, un défaut à la fois) ; les scripts ne sont pas versionnés.
 
 ## 4 bis. Décisions du propriétaire en cours de route
 
