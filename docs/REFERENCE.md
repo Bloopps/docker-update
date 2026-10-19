@@ -101,7 +101,8 @@ L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n
 
 `docker-update update` lit la dernière release de `Bloopps/docker-update`, télécharge `docker-update-linux-<arch>` et `SHA256SUMS`
 (https seulement), refuse tout fichier dont la somme SHA256 diffère ou qui n'est pas un ELF de la bonne architecture, puis remplace
-le binaire en cours par un renommage atomique (en cas d'échec, l'ancien reste en place). Il demande les droits d'écriture sur le
+le binaire en cours par un renommage atomique (en cas d'échec, l'ancien reste en place). **Dépôt privé** : `update` utilise un jeton GitHub, cherché dans `GH_TOKEN`, `GITHUB_TOKEN`, puis `gh auth token` (utilisateur courant). Sous `sudo`, l'environnement et la connexion `gh` ne suivent pas : `sudo env GH_TOKEN=$(gh auth token) docker-update update`. Le jeton (lecture des releases suffit) n'est envoyé qu'à `api.github.com`, jamais journalisé ; les fichiers passent alors par l'API des releases. Sans jeton, ce sont les adresses publiques de téléchargement.
+Il demande les droits d'écriture sur le
 dossier du binaire (en général `sudo`). Il ne lit ni ne modifie la configuration, l'état ou les conteneurs, et n'installe jamais une
 version plus ancienne. `--check` (ou `--dry-run`) dit seulement s'il existe mieux. Une compilation locale (`dev`) est remplacée par la
 dernière release. Les passages déjà lancés gardent l'ancien binaire jusqu'à leur fin ; le suivant utilise le nouveau.

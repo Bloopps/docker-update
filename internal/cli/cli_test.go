@@ -406,7 +406,10 @@ func TestUpdateCommandNeedsNoConfigAndCheckChangesNothing(t *testing.T) {
 	fetched := 0
 	env := &Env{Stdout: &out, Stderr: &errOut, Tag: "v0.1.0", UpdateDeps: func() selfupdate.Deps {
 		return selfupdate.Deps{Repo: "o/r", APIBase: "https://api.test", DownloadBase: "https://dl.test", GOOS: "linux", GOARCH: "amd64", Current: "v0.1.0", Target: target,
-			Fetch: func(url string, limit int64) ([]byte, error) { fetched++; return []byte(`{"tag_name":"v0.2.0"}`), nil }}
+			Fetch: func(url string, limit int64, token string) ([]byte, error) {
+				fetched++
+				return []byte(`{"tag_name":"v0.2.0"}`), nil
+			}}
 	}}
 	// configuration inexistante : `update` ne doit pas la lire
 	if code := Main([]string{"--config", filepath.Join(t.TempDir(), "absente.toml"), "update", "--check"}, env); code != 0 {

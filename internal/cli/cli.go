@@ -68,6 +68,8 @@ type Env struct {
 	Now func() time.Time
 	// UpdateDeps donne ce que `update` utilise (défaut : releases GitHub réelles, binaire en cours).
 	UpdateDeps func() selfupdate.Deps
+	// GHToken donne le jeton GitHub de `update` pour un dépôt privé (défaut : GH_TOKEN, GITHUB_TOKEN, puis `gh auth token`).
+	GHToken func() string
 	// Tag est l'étiquette de release compilée dans le binaire (« v1.2.3 », ou « dev »).
 	Tag string
 	// NewEngine construit le cœur (défaut : updater.New).
@@ -158,10 +160,13 @@ func (e *Env) fill() {
 	if e.Now == nil {
 		e.Now = time.Now
 	}
+	if e.GHToken == nil {
+		e.GHToken = func() string { return ghToken(e.Getenv) }
+	}
 	if e.UpdateDeps == nil {
 		e.UpdateDeps = func() selfupdate.Deps {
 			return selfupdate.Deps{Fetch: selfupdate.HTTPFetch, Repo: "Bloopps/docker-update", APIBase: "https://api.github.com",
-				DownloadBase: "https://github.com", GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Current: e.Tag, Target: e.Binary}
+				DownloadBase: "https://github.com", GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Current: e.Tag, Target: e.Binary, Token: e.GHToken()}
 		}
 	}
 	if e.NewEngine == nil {

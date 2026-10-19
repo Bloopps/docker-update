@@ -26,11 +26,12 @@ func elf(arch, marker string) []byte {
 func sum(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 
 type world struct {
-	t     *testing.T
-	files map[string][]byte
-	calls []string
-	d     Deps
-	log   []string
+	t      *testing.T
+	files  map[string][]byte
+	calls  []string
+	tokens []string
+	d      Deps
+	log    []string
 }
 
 func newWorld(t *testing.T, current, latest string) *world {
@@ -47,7 +48,8 @@ func newWorld(t *testing.T, current, latest string) *world {
 	base := "https://dl.test/o/r/releases/download/" + latest + "/"
 	w.files[base+"docker-update-linux-amd64"] = bin
 	w.files[base+"SHA256SUMS"] = []byte(sum(bin) + "  docker-update-linux-amd64\n" + sum(elf("arm64", "x")) + "  docker-update-linux-arm64\n")
-	w.d.Fetch = func(url string, limit int64) ([]byte, error) {
+	w.d.Fetch = func(url string, limit int64, token string) ([]byte, error) {
+		w.tokens = append(w.tokens, token)
 		w.calls = append(w.calls, url)
 		b, ok := w.files[url]
 		if !ok {
@@ -203,7 +205,57 @@ func TestFailedFetchLeavesBinary(t *testing.T) {
 }
 
 func TestHTTPFetchRefusesPlainHTTP(t *testing.T) {
-	if _, err := HTTPFetch("http://example.test/x", 10); err == nil {
+	if _, err := HTTPFetch("http://example.test/x", 10, ""); err == nil {
 		t.Fatal("http accepté")
+	}
+}
+
+// Dépôt privé : avec un jeton, les fichiers passent par l'API (identifiants) et le jeton accompagne chaque requête ; sans jeton, rien n'est envoyé.
+func TestPrivateRepoUsesAssetAPIWithToken(t *testing.T) {
+	w := newWorld(t, "v0.1.0", "v0.2.0")
+	base := "https://dl.test/o/r/releases/download/v0.2.0/"
+	api := "https://api.test/repos/o/r/releases/assets/"
+	w.files["https://api.test/repos/o/r/releases/latest"] = []byte(`{"tag_name":"v0.2.0","assets":[{"name":"SHA256SUMS","id":11},{"name":"docker-update-linux-amd64","id":22}]}`)
+	w.files[api+"11"] = w.files[base+"SHA256SUMS"]
+	w.files[api+"22"] = w.files[base+"docker-update-linux-amd64"]
+	w.d.Token = "secret"
+	if res, err := w.run(false); err != nil || !res.Updated {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	for i, tok := range w.tokens {
+		if tok != "secret" {
+			t.Fatalf("requête %d sans jeton : %v", i, w.calls[i])
+		}
+	}
+	for _, c := range w.calls {
+		if strings.Contains(c, "dl.test") {
+			t.Fatalf("adresse publique utilisée avec un jeton : %s", c)
+		}
+	}
+	for _, l := range w.log {
+		if strings.Contains(l, "secret") {
+			t.Fatal("jeton journalisé")
+		}
+	}
+}
+
+func TestPublicDownloadsSendNoToken(t *testing.T) {
+	w := newWorld(t, "v0.1.0", "v0.2.0")
+	if _, err := w.run(false); err != nil {
+		t.Fatal(err)
+	}
+	for _, tok := range w.tokens {
+		if tok != "" {
+			t.Fatal("jeton envoyé sans qu'il soit configuré")
+		}
+	}
+}
+
+func TestPrivateRepoAssetMissing(t *testing.T) {
+	w := newWorld(t, "v0.1.0", "v0.2.0")
+	w.files["https://api.test/repos/o/r/releases/latest"] = []byte(`{"tag_name":"v0.2.0","assets":[]}`)
+	w.d.Token = "t"
+	if _, err := w.run(false); err == nil || w.target() != "ancien" {
+		t.Fatalf("err=%v", err)
 	}
 }

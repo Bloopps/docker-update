@@ -10,15 +10,15 @@ Prérequis : Linux (amd64 ou arm64) avec `docker` et le plugin `compose`.
 
 ```sh
 arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
-curl -fsSL -o docker-update "https://github.com/Bloopps/docker-update/releases/latest/download/docker-update-linux-$arch"
+gh release download --repo Bloopps/docker-update --pattern "docker-update-linux-$arch" --output docker-update
 chmod +x docker-update && sudo ./docker-update init
 ```
 
-(ou téléchargez `docker-update-linux-amd64` / `-arm64` à la main depuis la [page des releases](https://github.com/Bloopps/docker-update/releases/latest))
+Le dépôt est privé : il faut la CLI [`gh`](https://cli.github.com/) connectée (`gh auth login`). Si le dépôt devient public, `curl -fsSL -o docker-update https://github.com/Bloopps/docker-update/releases/latest/download/docker-update-linux-$arch` suffit.
 
 `init` vérifie le serveur, installe le binaire et le minuteur, vous demande quels conteneurs suivre et écrit la configuration. Il
 demande confirmation avant chaque modification et ne met rien à jour : tous les services démarrent en mode `notify` (l'outil vous
-prévient, vous appliquez). Pour mettre l'outil à jour plus tard : `sudo docker-update update`.
+prévient, vous appliquez). Pour mettre l'outil à jour plus tard : `sudo env GH_TOKEN=$(gh auth token) docker-update update` (sans `GH_TOKEN` si le dépôt est public).
 
 ## Usage
 
@@ -27,7 +27,7 @@ docker-update list                # services suivis
 docker-update check               # observer, sans rien appliquer
 docker-update now NOM --yes       # appliquer tout de suite
 docker-update add NOM --container NOM     # suivre un conteneur de plus (rename, edit, delete existent aussi)
-sudo docker-update update         # se mettre à jour depuis la dernière release (SHA256SUMS vérifié ; --check : voir sans installer)
+sudo env GH_TOKEN=$(gh auth token) docker-update update   # se mettre à jour depuis la dernière release (SHA256SUMS vérifié ; --check : voir sans installer)
 sudo docker-update migrate        # si validate signale un ancien format de configuration ou d'unité systemd
 ```
 

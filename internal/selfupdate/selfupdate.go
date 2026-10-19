@@ -28,8 +28,8 @@ const (
 	maxSmall  = 1 << 20
 )
 
-// Fetch lit une URL https et renvoie le corps (au plus limit octets ; au-delà, c'est une erreur).
-type Fetch func(url string, limit int64) ([]byte, error)
+// Fetch lit une URL https et renvoie le corps (au plus limit octets ; au-delà, c'est une erreur). token vide : requête anonyme.
+type Fetch func(url string, limit int64, token string) ([]byte, error)
 
 // Deps regroupe ce qui touche au monde extérieur (remplacé dans les tests).
 type Deps struct {
@@ -44,6 +44,8 @@ type Deps struct {
 	Current string
 	// Target est le binaire à remplacer.
 	Target string
+	// Token donne un jeton GitHub (dépôt privé) ; vide : téléchargements publics, sans authentification. Jamais journalisé.
+	Token string
 }
 
 // Result décrit ce qui s'est passé.
@@ -78,22 +80,30 @@ func newer(a, b [3]int) bool { // a strictement plus récent que b
 	return false
 }
 
-// Latest renvoie l'étiquette de la dernière release publiée.
-func Latest(d Deps) (string, error) {
-	raw, err := d.Fetch(fmt.Sprintf("%s/repos/%s/releases/latest", d.APIBase, d.Repo), maxSmall)
+// Latest renvoie l'étiquette de la dernière release publiée et ses fichiers (nom -> identifiant, pour les dépôts privés).
+func Latest(d Deps) (string, map[string]int64, error) {
+	raw, err := d.Fetch(fmt.Sprintf("%s/repos/%s/releases/latest", d.APIBase, d.Repo), maxSmall, d.Token)
 	if err != nil {
-		return "", fmt.Errorf("lecture de la dernière release : %w", err)
+		return "", nil, fmt.Errorf("lecture de la dernière release : %w", err)
 	}
 	var rel struct {
-		Tag string `json:"tag_name"`
+		Tag    string `json:"tag_name"`
+		Assets []struct {
+			Name string `json:"name"`
+			ID   int64  `json:"id"`
+		} `json:"assets"`
 	}
 	if err := json.Unmarshal(raw, &rel); err != nil {
-		return "", errors.New("réponse GitHub illisible")
+		return "", nil, errors.New("réponse GitHub illisible")
 	}
 	if _, ok := ParseTag(rel.Tag); !ok {
-		return "", errors.New("étiquette de release inattendue (attendu : vX.Y.Z)")
+		return "", nil, errors.New("étiquette de release inattendue (attendu : vX.Y.Z)")
 	}
-	return rel.Tag, nil
+	assets := map[string]int64{}
+	for _, a := range rel.Assets {
+		assets[a.Name] = a.ID
+	}
+	return rel.Tag, assets, nil
 }
 
 // Run cherche la dernière release et, sauf check, remplace le binaire. Une version plus ancienne n'est jamais installée.
@@ -102,7 +112,7 @@ func Run(d Deps, check bool, log func(string)) (Result, error) {
 	if d.GOOS != "linux" || (d.GOARCH != "amd64" && d.GOARCH != "arm64") {
 		return res, fmt.Errorf("plateforme non prise en charge : %s/%s (releases : linux amd64 et arm64)", d.GOOS, d.GOARCH)
 	}
-	tag, err := Latest(d)
+	tag, assets, err := Latest(d)
 	if err != nil {
 		return res, err
 	}
@@ -121,8 +131,18 @@ func Run(d Deps, check bool, log func(string)) (Result, error) {
 	}
 
 	asset := "docker-update-linux-" + d.GOARCH
-	base := fmt.Sprintf("%s/%s/releases/download/%s/", d.DownloadBase, d.Repo, tag)
-	sums, err := d.Fetch(base+"SHA256SUMS", maxSmall)
+	// avec un jeton (dépôt privé) : API des fichiers de release ; sinon : adresses publiques de téléchargement
+	get := func(name string, limit int64) ([]byte, error) {
+		if d.Token == "" {
+			return d.Fetch(fmt.Sprintf("%s/%s/releases/download/%s/%s", d.DownloadBase, d.Repo, tag, name), limit, "")
+		}
+		id, ok := assets[name]
+		if !ok {
+			return nil, errors.New("absent de la release")
+		}
+		return d.Fetch(fmt.Sprintf("%s/repos/%s/releases/assets/%d", d.APIBase, d.Repo, id), limit, d.Token)
+	}
+	sums, err := get("SHA256SUMS", maxSmall)
 	if err != nil {
 		return res, fmt.Errorf("téléchargement de SHA256SUMS : %w", err)
 	}
@@ -130,7 +150,7 @@ func Run(d Deps, check bool, log func(string)) (Result, error) {
 	if err != nil {
 		return res, err
 	}
-	bin, err := d.Fetch(base+asset, maxBinary)
+	bin, err := get(asset, maxBinary)
 	if err != nil {
 		return res, fmt.Errorf("téléchargement de %s : %w", asset, err)
 	}
@@ -235,8 +255,8 @@ var client = &http.Client{
 	},
 }
 
-// HTTPFetch est le Fetch réel : https seulement, taille bornée, aucun jeton envoyé.
-func HTTPFetch(url string, limit int64) ([]byte, error) {
+// HTTPFetch est le Fetch réel : https seulement, taille bornée, jeton envoyé seulement à api.github.com.
+func HTTPFetch(url string, limit int64, token string) ([]byte, error) {
 	if !strings.HasPrefix(url, "https://") {
 		return nil, errors.New("URL non https refusée")
 	}
@@ -246,13 +266,20 @@ func HTTPFetch(url string, limit int64) ([]byte, error) {
 	}
 	req.Header.Set("User-Agent", "docker-update-selfupdate")
 	req.Header.Set("Accept", "application/octet-stream, application/vnd.github+json")
+	// le jeton ne part que vers l'API GitHub ; Go le retire de lui-même à une redirection vers un autre domaine
+	if token != "" && strings.HasPrefix(url, "https://api.github.com/") {
+		req.Header.Set("Authorization", "Bearer "+token)
+		if strings.Contains(url, "/releases/assets/") {
+			req.Header.Set("Accept", "application/octet-stream")
+		}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, errors.New("réseau injoignable")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, errors.New("introuvable (HTTP 404 : pas encore de release ?)")
+		return nil, errors.New("introuvable (HTTP 404 : pas encore de release, ou dépôt privé sans jeton GH_TOKEN)")
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("réponse HTTP %d", resp.StatusCode)
