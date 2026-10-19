@@ -29,7 +29,7 @@ Condition d'arrêt générale : tout comportement qui ressemble à un danger pou
 | `deploy/docker-update.service`, `.timer` | unités `systemd` (le service démarre en mode **`check`**, qui n'applique rien) |
 | `e2e/`, `testdata/fakedocker/` | tests de bout en bout : le vrai binaire avec un faux `docker` |
 
-Lis d'abord `README.md` (fonctionnement, sous-commandes, modèle de menace, limites connues).
+Lis d'abord `README.md` (vue d'ensemble) puis `docs/REFERENCE.md` (fonctionnement, sous-commandes, modèle de menace, limites connues).
 
 ## 2. Étape 1 — Pré-vérifications (lecture seule)
 

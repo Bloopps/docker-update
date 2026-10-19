@@ -1,7 +1,7 @@
 # docker-update
 
 Outil Go (bibliothèque standard seulement, un binaire statique linux amd64 / arm64) de mise à jour d'images Docker Compose,
-exécuté sur l'hôte. Voir README.md (installation, fonctionnement, limites) et docs/AGENT.md (procédure de déploiement).
+exécuté sur l'hôte. Voir README.md (installation, usage), docs/REFERENCE.md (détail, limites) et docs/AGENT.md (procédure de déploiement).
 
 ## Commandes
 
