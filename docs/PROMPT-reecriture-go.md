@@ -222,9 +222,18 @@ saut de ligne, caractères non ASCII, blocs en groupe.
 
 ### 9.2 `docker-update init`
 
-Crée une configuration **neuve** (refuse si le fichier existe, sauf `--force` qui sauvegarde d'abord ; pour un fichier existant, indique
-`add`). Étapes, en **lecture seule** sur Docker :
+Vérifie l'installation, puis crée une configuration **neuve** (refuse si le fichier existe, sauf `--force` qui sauvegarde d'abord ; pour un
+fichier existant, indique `add`). Étapes, en **lecture seule** sur Docker :
 
+0. **Vérifications d'installation** (ajout demandé par le propriétaire : `init` doit permettre de tout contrôler avant de commencer à
+   utiliser l'outil). Chaque contrôle affiche ✓ ou ✗ avec la commande qui corrige, sans rien modifier ; un ✗ bloquant arrête `init`
+   avant toute question (`--skip-checks` ne passe que les contrôles non bloquants). Contrôles : exécution en root ; `docker` présent et
+   démon joignable ; plugin `compose` présent (version) ; `regctl` présent si `registry_tool = "regctl"`, sinon `docker buildx` présent ;
+   binaire installé (chemin, droits, propriétaire root) ; dossiers de configuration, d'état et du verrou (existent ou créables, droits,
+   propriétaire, écriture possible) ; `DOCKER_CONFIG` lisible ; fichier du webhook et du jeton GitHub (droits 600, propriétaire root) ;
+   unités `docker-update.service` et `.timer` installées, minuteur actif, **mode de l'unité** (`check` ou `run`) affiché ; accès réseau
+   au registre et à `api.github.com` (non bloquant). Le même jeu de contrôles est relançable seul : `init --check` (code 0 si tout est ✓,
+   1 sinon), y compris après coup, avant de passer le minuteur de `check` à `run`.
 1. Découverte : `docker ps` puis `docker inspect` des conteneurs qui tournent → nom, image, étiquettes `com.docker.compose.project`,
    `.service`, `.project.working_dir`, `.project.config_files` (comme l'étape 2 de `docs/AGENT.md`). Ignore les conteneurs hors compose.
 2. Contrôle du nom de projet : `docker compose --project-directory D -f … config --format json` doit donner le **même** nom de projet
@@ -239,7 +248,8 @@ Crée une configuration **neuve** (refuse si le fichier existe, sauf `--force` q
 4. Webhook : propose de lancer le même parcours que `set-webhook` (saisie masquée).
 5. Aperçu complet du fichier, confirmation, écriture, puis `validate` et affichage de la suite (`docker-update check`). `init` ne lance
    **aucune** mise à jour et ne touche à aucun conteneur.
-Version non interactive : `init --yes --mode notify [--include nom,nom] [--exclude nom,nom]`.
+Version non interactive : `init --yes --mode notify [--include nom,nom] [--exclude nom,nom]`. Tests : un faux monde avec chaque contrôle en échec
+tour à tour (sortie et code attendus), et `init --check` sur une installation saine.
 
 ### 9.3 `docker-update add NOM`
 

@@ -32,10 +32,13 @@ sudo docker-update --config /etc/docker-update/updates.toml --dry-run check
 sudo systemctl daemon-reload && sudo systemctl enable --now docker-update.timer
 ```
 
-**`init` (à venir, phase 7).** La commande `docker-update init` prendra en charge la partie *configuration* : elle découvre les
-conteneurs Compose qui tournent (lecture seule), pose les questions service par service, écrit `updates.toml` après aperçu et
-confirmation, propose `set-webhook`, puis lance `validate`. Elle ne remplace pas la pose du binaire ni des unités systemd ci-dessus.
-Elle n'existe pas encore dans le binaire : d'ici là, `updates.toml` se rédige à la main à partir de `examples/`.
+**`init` (à venir, phase 7).** La commande `docker-update init` contrôlera d'abord toute l'installation, en lecture seule : Docker et
+`compose`, `regctl` ou `buildx`, binaire, dossiers et droits (configuration, état, verrou), fichiers du webhook et du jeton, unités
+systemd et minuteur (avec leur mode `check` ou `run`), accès au registre et à GitHub. Chaque point s'affiche ✓ ou ✗ avec la commande
+qui le corrige, et `init --check` rejoue ces contrôles à tout moment. Ensuite, elle découvre les conteneurs Compose qui tournent, pose
+les questions service par service, écrit `updates.toml` après aperçu et confirmation, propose `set-webhook`, puis lance `validate`.
+Elle ne pose pas elle-même le binaire ni les unités : elle dit ce qui manque. Elle n'existe pas encore dans le binaire : d'ici là,
+suivre les commandes ci-dessus et rédiger `updates.toml` à la main à partir de `examples/`.
 
 L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n'a pas validé le résultat et basculé sur
 `run`. La procédure complète, avec les critères d'acceptation de chaque étape et le retour arrière, est dans

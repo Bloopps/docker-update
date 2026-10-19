@@ -333,6 +333,13 @@ Mutation manuelle de la phase 4 (34 défauts introduits à la main dans `interna
 change rien, car `cycle` exclut déjà les digests en échec avant d'appliquer ; la garde est redondante (et `describe` / `statusRow` testent
 `FailedBefore` en premier). La campagne complète est la phase 6 (mission §6.4).
 
+## 4 bis. Décisions du propriétaire en cours de route
+
+- **`init` vérifie l'installation** (demande du propriétaire, phase 7) : avant toute question, `init` contrôle en lecture seule Docker,
+  `compose`, `regctl` / `buildx`, binaire, dossiers et droits, fichiers du webhook et du jeton, unités systemd et minuteur (mode
+  `check` ou `run`), accès au registre et à GitHub ; `init --check` rejoue ces contrôles seuls. Spécifié dans `docs/PROMPT-reecriture-go.md` §9.2
+  (étape 0) et annoncé dans la section Installation du README. Non implémenté avant la phase 7 ; `init` ne pose ni le binaire ni les unités.
+
 ## 5. Propositions
 
 Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *effet sur le comportement*, *risque*, *effort*,
