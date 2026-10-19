@@ -63,5 +63,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
+          # Les notes : l'en-tête fixe (.github/release-header.md) puis la liste générée par GitHub, classée par .github/release.yml.
           # --target crée l'étiquette sur ce commit quand elle n'existe pas encore (fusion sur main) ; sans effet sur une étiquette poussée.
-          gh release create "${TAG}" dist/* --title "${TAG}" --generate-notes --target "${GITHUB_SHA}"
+          gh release create "${TAG}" dist/* --title "${TAG}" --notes-file .github/release-header.md --generate-notes --target "${GITHUB_SHA}"

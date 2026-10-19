@@ -12,7 +12,7 @@ Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
 Le binaire Go est statique (aucune dépendance) pour Linux **amd64** et **arm64**. Il lui faut seulement `docker` (avec le plugin `compose`)
 sur l'hôte, et `regctl` si `registry_tool = "regctl"`. Chaque fusion sur `main` publie une release GitHub (étiquette `vX.Y.Z` = dernière étiquette + 1 sur le correctif, `v0.1.0` à la
 première ; une étiquette `v*` poussée à la main publie aussi) avec les binaires `docker-update-linux-amd64` et `-arm64` et
-`SHA256SUMS` (à vérifier avec `sha256sum -c`, ou laisser `update` le faire, voir plus bas) ; sinon on compile
+`SHA256SUMS` et des notes (en-tête fixe `.github/release-header.md`, puis les PR classées par étiquette selon `.github/release.yml`, `migration` en tête) (à vérifier avec `sha256sum -c`, ou laisser `update` le faire, voir plus bas) ; sinon on compile
 (`CGO_ENABLED=0 go build -trimpath -o docker-update ./cmd/docker-update`, Go 1.27 ou plus récent) ou on prend l'artefact de la CI.
 
 **`sudo ./docker-update init`** installe et configure tout :

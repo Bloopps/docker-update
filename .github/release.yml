@@ -1,0 +1,14 @@
+changelog:
+  categories:
+    - title: "⚠️ Migration requise"
+      labels: [migration]
+    - title: "🔒 Sécurité"
+      labels: [security, securite, sécurité]
+    - title: "✨ Nouveautés"
+      labels: [enhancement, feature, nouveauté]
+    - title: "🐛 Corrections"
+      labels: [bug, fix, correction]
+    - title: "📚 Documentation"
+      labels: [documentation]
+    - title: "Autres changements"
+      labels: ["*"]
