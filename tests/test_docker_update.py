@@ -1840,6 +1840,36 @@ class TestReleaseNotes(Base):
         u.cycle(apply=True)
         self.assertEqual(len(self.gh_calls), n + 1)
 
+    def test_history_once_then_only_the_latest_releases(self):
+        url = "https://api.github.com/repos/traefik/traefik/releases?per_page=%d"
+        self.releases(release(self.clock, "v3.7.12", "old"))
+        u = self.mk()
+        u.cycle(apply=True)
+        self.assertEqual(self.gh_calls[-1][0], url % 30, "première lecture : tout l'historique")
+        for hours in (2, 2, 2):
+            self.clock.days(hours / 24)
+            u.cycle(apply=True)
+            self.assertEqual(self.gh_calls[-1][0], url % 10, "ensuite : seulement les dernières")
+        self.releases(release(self.clock, "v3.7.14", "Fixes CVE-2026-1111"), release(self.clock, "v3.7.12", "old"), etag="e2")
+        self.clock.days(2 / 24)
+        u.cycle(apply=True)
+        self.assertEqual(len(self.posts), 1, "une nouvelle release est vue avec 10 demandées")
+        self.clock.days(8)                                          # plus de 7 jours sans lecture complète
+        u.cycle(apply=True)
+        self.assertEqual(self.gh_calls[-1][0], url % 30)
+        self.clock.days(2 / 24)
+        u.cycle(apply=True)
+        self.assertEqual(self.gh_calls[-1][0], url % 10)
+
+    def test_a_failed_first_read_is_retried_with_the_full_history(self):
+        self.gh_rel["traefik/traefik"] = (500, None, "")
+        u = self.mk()
+        u.cycle(apply=True)
+        self.releases(release(self.clock, "v3.7.14", "Fixes CVE-2026-1111"))
+        u.cycle(apply=True)
+        self.assertTrue(self.gh_calls[-1][0].endswith("per_page=30"))
+        self.assertEqual(len(self.posts), 1)
+
     def test_first_ever_rate_limit_also_waits_the_interval(self):
         self.gh_rel["traefik/traefik"] = (429, None, "")
         u = self.mk()
@@ -1879,6 +1909,7 @@ class TestReleaseNotes(Base):
         self.clock.days(2 / 24)
         u.cycle(apply=True)
         self.assertEqual(self.gh_calls[1][2], "e1", "requête conditionnelle (ETag)")
+        self.assertEqual(self.gh_calls[1][0], "https://api.github.com/repos/traefik/traefik/releases?per_page=10")
         self.assertEqual(len(u.state.data["releases"]["traefik/traefik"]["items"]), 1)
         self.assertEqual(len(self.posts), 1, "un 304 ne ré-émet rien")
 

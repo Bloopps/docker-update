@@ -62,6 +62,8 @@ DISCORD_MAX = 1900
 MAX_MANIFEST = 4 << 20
 MAX_API_BODY = 2 << 20
 MAX_RELEASES_BODY = 8 << 20
+RELEASES_FIRST, RELEASES_NEXT = 30, 10      # releases demandées à la 1re synchronisation, puis aux passages suivants
+RELEASES_RESYNC = 7 * 86400                 # sans synchronisation complète depuis ce délai : on relit les 30
 SEVERITIES = ("low", "medium", "high", "critical")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 GHSA_RE = re.compile(r"^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$")
@@ -868,10 +870,12 @@ class Updater:
             return ""
 
     def _poll_github(self, bucket: str, repo: str, path: str, compact: Callable[[object], dict | None],
-                     label: str, empty: tuple[int, ...] = (), backoff: tuple[int, ...] = ()) -> list[dict]:
+                     label: str, empty: tuple[int, ...] = (), backoff: tuple[int, ...] = (),
+                     meta: dict | None = None) -> list[dict]:
         """Liste GitHub d'un dépôt, en cache (ETag) : au plus une requête par `advisory_poll`.
         `empty` : codes qui signifient « rien à lire » (liste vide valide) ; `backoff` : codes après lesquels
-        on attend aussi tout l'intervalle (limite de débit) au lieu de réessayer à chaque passage."""
+        on attend aussi tout l'intervalle (limite de débit) au lieu de réessayer à chaque passage ;
+        `meta` : champs ajoutés à l'entrée de cache quand la lecture réussit."""
         st = self.cfg.settings
         cache = self.state.data[bucket]
         rec = cache.get(repo) or {}
@@ -880,11 +884,12 @@ class Updater:
             return rec.get("items", [])
         code, body, etag = self.gh_get(f"{st.github_api}/repos/{repo}/{path}", self._token(), rec.get("etag", ""))
         if code == 304 and rec.get("ok"):
-            rec["fetched"] = now
+            rec.update(meta or {}, fetched=now)
         elif code == 200 and isinstance(body, list):
-            rec = {"ok": True, "fetched": now, "etag": etag, "items": [c for c in (compact(a) for a in body) if c]}
+            rec = {"ok": True, "fetched": now, "etag": etag, "items": [c for c in (compact(a) for a in body) if c],
+                   **(meta or {})}
         elif code in empty:
-            rec = {"ok": True, "fetched": now, "etag": "", "items": []}
+            rec = {"ok": True, "fetched": now, "etag": "", "items": [], **(meta or {})}
         else:
             # échec (réseau, limite de débit, dépôt sans avis publics) : on garde l'ancien contenu, on réessaie plus tard
             if not rec.get("err"):
@@ -901,9 +906,15 @@ class Updater:
                                  "veille de sécurité")
 
     def releases(self, repo: str) -> list[dict]:
-        """30 dernières releases du dépôt (compactées). 404 : dépôt sans release lisible, ce n'est pas une erreur."""
-        return self._poll_github("releases", repo, "releases?per_page=30", compact_release,
-                                 "notes de release", empty=(404,), backoff=(403, 429))
+        """Dernières releases du dépôt (compactées) : 30 à la première lecture (historique), puis 10 seulement, car on
+        ne cherche que les nouveautés ; 30 de nouveau si la dernière lecture complète a plus de 7 jours.
+        404 : dépôt sans release lisible, ce n'est pas une erreur."""
+        rec = self.state.data["releases"].get(repo) or {}
+        now = int(self.now())
+        full = not rec.get("ok") or now - int(rec.get("full", 0)) > RELEASES_RESYNC
+        n = RELEASES_FIRST if full else RELEASES_NEXT
+        return self._poll_github("releases", repo, f"releases?per_page={n}", compact_release, "notes de release",
+                                 empty=(404,), backoff=(403, 429), meta={"full": now if full else rec.get("full", 0)})
 
     def _labels(self, target: str) -> dict:
         r = self.run.run(["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", target])

@@ -76,8 +76,9 @@ Activée service par service avec `release_notes = true`. Elle ne fait **qu'aler
 écrit par un tiers, donc non fiable. Elle ne raccourcit jamais le délai, ne rend rien éligible, ne tire aucune image.
 
 1. Dépôt lu : `release_notes_repos` (liste « propriétaire/dépôt »), à défaut `advisories`. L'outil lit
-   `GET /repos/{dépôt}/releases?per_page=30`, avec les mêmes ETag, le même jeton (`github_token_file`) et le même
-   `advisory_poll` que les avis. Un échec de l'API (réseau, limite de débit, 404 : dépôt sans release ou privé) n'est
+   `GET /repos/{dépôt}/releases`, avec les mêmes ETag, le même jeton (`github_token_file`) et le même `advisory_poll`
+   que les avis. La première lecture demande les 30 dernières releases (l'historique) ; ensuite seulement les 10 dernières
+   (on ne cherche que les nouveautés, et un 304 ne renvoie rien) ; 30 de nouveau après 7 jours sans lecture complète. Un échec de l'API (réseau, limite de débit, 404 : dépôt sans release ou privé) n'est
    jamais une erreur et n'empêche jamais les mises à jour.
 2. Version en cours : étiquette `org.opencontainers.image.version` (ou `version_label`). Absente ou illisible
    (`latest`, `main`…) : **une seule alerte « impossible de comparer »**, aucune note lue, aucune requête.
@@ -125,7 +126,7 @@ vôtre (ex. 9.0.1 alors que vous suivez 8.1) est signalée aussi. Une note qui n
 ## Tests et qualité
 
 ```sh
-python3 -m unittest discover -s tests -v      # 165 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
+python3 -m unittest discover -s tests -v      # 167 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
 ```
 
 Les tests de bout en bout lancent le **vrai programme** en sous-processus, avec un faux exécutable `docker` placé dans le
