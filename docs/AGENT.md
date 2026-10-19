@@ -27,7 +27,7 @@ Condition d'arrêt générale : tout comportement qui ressemble à un danger pou
 | `examples/updates.example.toml` | configuration d'exemple (placeholders à remplacer) |
 | `examples/updates.watchtower.toml` | les applications suivies par Watchtower, toutes en `notify` (placeholders à remplacer) |
 | `deploy/docker-update.service`, `.timer` | unités `systemd` (le service démarre en mode **`check`**, qui n'applique rien) |
-| `tests/` | 252 tests (`python3 -m unittest discover -s tests`) |
+| `tests/` | 269 tests (`python3 -m unittest discover -s tests`) |
 
 Lis d'abord `README.md` (fonctionnement, sous-commandes, modèle de menace, limites connues).
 
@@ -44,7 +44,7 @@ Teste l'outil lui-même sans rien installer, depuis le dépôt cloné :
 ```sh
 python3 -m unittest discover -s tests 2>&1 | tail -5
 ```
-**Attendu : « OK », 252 tests.** Les tests ne créent que des fichiers temporaires et un serveur HTTP local sur `127.0.0.1`.
+**Attendu : « OK », 269 tests.** Les tests ne créent que des fichiers temporaires et un serveur HTTP local sur `127.0.0.1`.
 Si un test échoue, ne continue pas : donne la sortie.
 
 Vérifie que la lecture du digest distant fonctionne **depuis ce serveur** (c'est la commande exacte que l'outil utilise) :
@@ -216,6 +216,8 @@ un tag de version (`:1.2`) ; dans ce cas mets `cooldown = "0"` pour le groupe, l
 
 ```sh
 sudo docker-update --config /etc/docker-update/updates.toml status               # ce qui attend, depuis quand
+sudo docker-update --config /etc/docker-update/updates.toml check traefik immich # scan manuel d'une sélection (rien n'est appliqué) ; sans nom : tout
+sudo docker-update --config /etc/docker-update/updates.toml check --notify       # idem, et le tableau d'état part sur Discord
 sudo docker-update --config /etc/docker-update/updates.toml now traefik --yes    # voie rapide : applique tout de suite
 sudo docker-update --config /etc/docker-update/updates.toml hold traefik         # met en pause (aucune mise à jour automatique)
 sudo docker-update --config /etc/docker-update/updates.toml unhold traefik

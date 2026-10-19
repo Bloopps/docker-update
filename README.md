@@ -41,8 +41,8 @@ Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
 | Commande | Effet |
 | --- | --- |
 | `validate` | vérifie configuration, outils et chemins ; ne touche à rien |
-| `check` | observe (registre, état, tests de fumée, version détectée) ; n'applique **rien**, n'envoie **rien**, ne télécharge **rien** |
-| `run` | observe, applique ce qui est prêt en mode `auto`, notifie |
+| `check [NOM…] [--notify]` | **scan manuel** de tous les services, ou de ceux désignés (nom de service ou de groupe) : registre, état, tests de fumée, version détectée ; n'applique **rien**, n'envoie **rien**, ne télécharge **rien**. Avec `--notify`, le tableau d'état de la sélection part sur Discord (📋, un message) |
+| `run [NOM…]` | observe, applique ce qui est prêt en mode `auto`, notifie ; tous les services, ou la sélection |
 | `now NOM… --yes` | applique tout de suite (sans délai ni fenêtre) ; sans `--yes`, simule |
 | `hold NOM…` / `unhold NOM…` | met en pause / reprend |
 | `status` | état mémorisé |
@@ -92,6 +92,12 @@ Un passage `run` (ou `now`) envoie **au plus UN message**, quel que soit le nomb
 | ✅ Mises à jour réussies | `service → image` |
 | 📦 Nouvelles versions prêtes | **tableau** service / image / vue depuis, pour les services en mode `notify` |
 | ℹ️ Infos | signaux faibles, « impossible de comparer » |
+| 📋 État des services | **tableau** service / état / détail, uniquement sur demande : `check [NOM…] --notify` |
+
+**Scan manuel.** `docker-update check` scanne tout ; `docker-update check traefik immich` ne scanne que ces services (un nom de
+groupe désigne ses membres). Une sélection ne touche ni aux compteurs de délai ni aux erreurs connues des autres services.
+`check --notify` envoie en plus le tableau d'état (à jour, prête, différée, à revoir, ignoré, ERREUR) ; sans URL lisible, il
+échoue avec un message clair. `run NOM…` fait de même en appliquant ce qui est prêt, pour la sélection seulement.
 
 Le niveau du message (✅ ℹ️ ⚠️ 🚨) est celui du pire événement. Rien de nouveau : **aucun message**. Le message est borné à
 environ 1 650 caractères : le plus important vient en premier, le reste est compté (« … N élément(s) non affiché(s) ») et
@@ -164,7 +170,7 @@ vôtre (ex. 9.0.1 alors que vous suivez 8.1) est signalée aussi. Une note qui n
 ## Tests et qualité
 
 ```sh
-python3 -m unittest discover -s tests -v      # 252 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
+python3 -m unittest discover -s tests -v      # 269 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
 ```
 
 Les tests de bout en bout lancent le **vrai programme** en sous-processus, avec un faux exécutable `docker` placé dans le
@@ -177,7 +183,7 @@ Il n'est pas rejoué par la CI.
 Un troisième, sur le nettoyage des images, a introduit 12 défauts (suppression forcée, après un échec, en simulation,
 réglage par service ignoré…) : les 12 sont détectés.
 D'autres, sur l'échec sans retour arrière (9), les conteneurs arrêtés (6), le rapprochement avis / notes (12), le rapport
-unique et la commande `set-webhook` (20), l'ont été de même.
+unique et la commande `set-webhook` (20) et le scan ciblé (10), l'ont été de même.
 Un second test de mutation, sur la veille des notes de release, a introduit 33 défauts (accélération par une note, pré-version
 non ignorée, mot `security` seul pris pour fort, `@everyone` non neutralisé, doublon d'alerte…) : 32 détectés après
 correction de 5 angles morts des tests ; le dernier est équivalent (valeur par défaut jamais lue).

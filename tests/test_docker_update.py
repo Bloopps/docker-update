@@ -1369,6 +1369,19 @@ service = "a"
 ''')
         return p
 
+    def test_check_and_run_pass_their_names_and_options_on(self):
+        p = self.write_cfg()
+        base = ["--config", p, "--allow-untrusted-config"]
+        with mock.patch.object(du.Updater, "cycle", return_value=0) as cyc, mock.patch("sys.stdout", new=io.StringIO()):
+            du.main(base + ["run", "a"])
+            cyc.assert_called_with(apply=True, names=["a"])
+            du.main(base + ["run"])
+            cyc.assert_called_with(apply=True, names=[])
+            du.main(base + ["check", "a", "b", "--notify"])
+            cyc.assert_called_with(apply=False, names=["a", "b"], notify=True)
+            du.main(base + ["check"])
+            cyc.assert_called_with(apply=False, names=[], notify=False)
+
     def test_validate_and_status_and_hold(self):
         p = self.write_cfg()
         with mock.patch("sys.stdout", new=io.StringIO()) as out:
@@ -2605,6 +2618,126 @@ class TestSetWebhook(Base):
                 with self.assertRaises(du.ConfigError) as cm:
                     du.parse_config(data)
                 self.assertIn("n'existe plus", str(cm.exception))
+
+
+# ── Scan manuel : tous les services ou une sélection ────────────────────────
+
+class TestManualScan(Base):
+    def stack(self, names=("a", "b", "c"), **kw):
+        svcs = []
+        for n in names:
+            self.world.add(n, f"/stack/{n}", n, f"img/{n}:1", 1)
+            self.world.registry[f"img/{n}:1"] = manifest(2)
+            svcs.append(self.svc(n, f"/stack/{n}", **kw))
+        return svcs
+
+    def inspected(self):
+        return sorted({c[4].split(":")[0] for c in self.world.calls if c[:4] == ["docker", "buildx", "imagetools", "inspect"]})
+
+    def test_check_on_a_selection_scans_only_those(self):
+        u = self.make(self.stack())
+        self.assertEqual(u.cycle(apply=False, names=["b"]), 0)
+        self.assertEqual(self.inspected(), ["img/b"])
+        self.assertIn("scan limité à : b", self.logtext())
+        self.assertIn("b: nouvelle image", self.logtext())
+        self.assertNotIn("a: ", self.logtext())
+
+    def test_no_name_scans_everything(self):
+        u = self.make(self.stack())
+        u.cycle(apply=False)
+        self.assertEqual(self.inspected(), ["img/a", "img/b", "img/c"])
+        self.assertNotIn("scan limité", self.logtext())
+
+    def test_a_group_name_selects_all_its_members(self):
+        svcs = self.stack(("a", "b", "c"))
+        svcs[0]["group"] = svcs[1]["group"] = "g"
+        u = self.make(svcs)
+        u.cycle(apply=False, names=["g"])
+        self.assertEqual(self.inspected(), ["img/a", "img/b"])
+
+    def test_several_names_keep_the_file_order_and_unknown_is_refused(self):
+        u = self.make(self.stack())
+        self.assertEqual([s.name for s in u.select(["c", "a"])], ["a", "c"])
+        self.assertEqual([s.name for s in u.select(["a", "a"])], ["a"])
+        with self.assertRaises(du.UpdateError) as cm:
+            u.select(["a", "nope"])
+        self.assertIn("inconnu : nope", str(cm.exception))
+        self.assertEqual(len(u.select(None)), 3)
+        self.assertEqual(len(u.select([])), 3)
+
+    def test_run_on_a_selection_updates_only_those(self):
+        u = self.make(self.stack(cooldown="0"))
+        self.assertEqual(u.cycle(apply=True, names=["b"]), 0)
+        self.assertEqual([x for x, _ in self.world.ups], ["b"])
+        c = self.posts[0][1]["content"]
+        self.assertIn("b → ", c)
+        self.assertNotIn("a → ", c)
+
+    def test_a_selection_never_erases_what_it_did_not_look_at(self):
+        u = self.make(self.stack())
+        u.cycle(apply=True)                                           # compteurs de délai pour a, b et c
+        before = {k: dict(v) for k, v in u.state.images.items()}
+        self.assertEqual(sorted(before), ["img/a:1", "img/b:1", "img/c:1"])
+        self.world.images["id-a-old"] = [f"img/a@{dg(2)}"]            # a est maintenant à jour
+        self.clock.days(1)
+        u.cycle(apply=True, names=["a"])
+        self.assertEqual(sorted(u.state.images), sorted(before), "les compteurs de b et c sont intacts")
+        self.assertEqual(u.state.images["img/b:1"]["first_seen"], before["img/b:1"]["first_seen"])
+
+    def test_a_selection_keeps_the_known_errors_of_the_others(self):
+        u = self.make(self.stack(("a", "b")))
+        self.world.fail_registry.add("img/b:1")
+        u.cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn("b", u.state.data["errors"])
+        u.cycle(apply=True, names=["a"])
+        self.assertIn("b", u.state.data["errors"], "l'erreur de b reste connue")
+        u.cycle(apply=True)
+        self.assertEqual(len(self.posts), 1, "pas de nouvelle alerte pour la même erreur de b")
+
+    def test_check_notify_sends_the_state_table_of_the_selection(self):
+        svcs = self.stack(("a", "b", "c"))
+        self.world.images["id-c-old"] = [f"img/c@{dg(2)}"]            # c à jour
+        u = self.make(svcs)
+        self.assertEqual(u.cycle(apply=False, names=["b", "c"], notify=True), 0)
+        self.assertEqual(len(self.posts), 1)
+        c = self.posts[0][1]["content"]
+        self.assertIn("État des services", c)
+        self.assertRegex(c, r"b\s+différée\s+image ")
+        self.assertRegex(c, r"c\s+à jour")
+        self.assertNotRegex(c, r"\ba\s+(différée|à jour)")
+        self.assertIn("2 services scannés", c)
+        self.assertEqual(self.world.ups, [])
+
+    def test_check_without_notify_still_sends_nothing(self):
+        self.make(self.stack()).cycle(apply=False)
+        self.assertEqual(self.posts, [])
+
+    def test_check_notify_without_a_webhook_fails_loudly(self):
+        u = self.make(self.stack())
+        os.unlink(self.url_file)
+        self.assertEqual(u.cycle(apply=False, notify=True), 1)
+        self.assertIn("aucune URL de notification lisible", self.logtext())
+
+    def test_status_rows(self):
+        svcs = self.stack(("p", "q", "r"), cooldown="1d")
+        svcs[2]["mode"] = "notify"
+        u = self.make(svcs)
+        evals = [u.evaluate(s) for s in u.cfg.services]
+        self.assertEqual(u.status_row(evals[0])[1:], ("différée", f"image {dg(2)[7:19]}, encore 1 j"))
+        self.clock.days(1.1)
+        evals = [u.evaluate(s) for s in u.cfg.services]
+        self.assertEqual(u.status_row(evals[2])[1], "prête")
+        self.assertIn("mode notify", u.status_row(evals[2])[2])
+        evals[0].failed_before = True
+        self.assertEqual(u.status_row(evals[0])[1], "à revoir")
+        self.world.fail_registry.add("img/q:1")
+        err = u.evaluate(u.cfg.services[1])
+        self.assertEqual(u.status_row(err)[1], "ERREUR")
+        u.state.data["holds"].append("p")
+        self.assertEqual(u.status_row(u.evaluate(u.cfg.services[0]))[1:], ("ignoré", "en pause (hold)"))
+        self.world.images["id-r-old"] = [f"img/r@{dg(2)}"]
+        self.assertEqual(u.status_row(u.evaluate(u.cfg.services[2])), ("r", "à jour", ""))
 
 
 if __name__ == "__main__":

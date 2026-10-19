@@ -22,8 +22,9 @@ Fonctions
 
 Sous-commandes
   validate          vérifie la configuration et les outils, ne touche à rien
-  check             observe (registre + état + tests de fumée), n'applique RIEN, n'envoie rien
-  run               observe, applique les mises à jour « auto » dont le délai est écoulé, notifie
+  check [NOM...]    scan manuel (tous les services, ou ceux désignés par nom ou groupe) : n'applique RIEN, n'envoie
+                    rien (sauf avec --notify : le tableau d'état part sur Discord)
+  run [NOM...]      observe, applique les mises à jour « auto » dont le délai est écoulé, notifie (tous, ou la sélection)
   now NOM... --yes  applique tout de suite (sans délai ni fenêtre) les services ou groupes nommés
   hold NOM...       met en pause (aucune mise à jour automatique) ; unhold NOM... reprend
   status            affiche l'état mémorisé
@@ -681,7 +682,13 @@ REPORT_SECTIONS = (
     ("maj", "✅", "Mises à jour réussies", "mise à jour", "mises à jour"),
     ("pret", "📦", "Nouvelles versions prêtes (à appliquer avec `docker-update now <service> --yes`)", "version prête", "versions prêtes"),
     ("info", "ℹ️", "Infos", "info", "infos"),
+    ("etat", "📋", "État des services (scan manuel)", "service scanné", "services scannés"),
 )
+# tableaux : (en-tête, largeur maximale de chaque colonne)
+REPORT_TABLES = {
+    "pret": (("service", "image", "vue depuis"), (28, 14, 12)),
+    "etat": (("service", "état", "détail"), (28, 10, 52)),
+}
 LEVEL_RANK = {"info": 0, "ok": 1, "warn": 2, "error": 3}
 REPORT_BUDGET = 1650            # caractères : sous la limite de Discord (1900) avec le titre
 REPORT_LINES, REPORT_LINE = 5, 300
@@ -692,24 +699,28 @@ class Report:
 
     def __init__(self) -> None:
         self.items: dict[str, list[tuple[str, str, str]]] = {k: [] for k, *_ in REPORT_SECTIONS}
-        self.rows: list[tuple[str, str, str]] = []              # tableau « nouvelles versions prêtes »
+        self.tables: dict[str, list[tuple[str, ...]]] = {k: [] for k in REPORT_TABLES}
 
     def add(self, kind: str, title: str, text: str = "", level: str = "info") -> None:
         self.items[kind].append((title, text, level))
 
+    def add_row(self, kind: str, *cells: str) -> None:
+        self.tables[kind].append(tuple(cells))
+
     def add_ready(self, service: str, image: str, since: str) -> None:
-        self.rows.append((service, image, since))
+        self.add_row("pret", service, image, since)
 
     def empty(self) -> bool:
-        return not self.rows and not any(self.items.values())
+        return not any(self.tables.values()) and not any(self.items.values())
 
     def counts(self) -> dict[str, int]:
         c = {k: len(v) for k, v in self.items.items()}
-        c["pret"] += len(self.rows)
+        for k, rows in self.tables.items():
+            c[k] += len(rows)
         return {k: n for k, n in c.items() if n}
 
     def level(self) -> str:
-        levels = [lv for v in self.items.values() for _, _, lv in v] + (["info"] if self.rows else [])
+        levels = [lv for v in self.items.values() for _, _, lv in v] + (["info"] if any(self.tables.values()) else [])
         return max(levels, key=LEVEL_RANK.__getitem__, default="info")
 
     def title(self) -> str:
@@ -740,7 +751,7 @@ class Report:
 
         for key, icon, heading, _, _ in REPORT_SECTIONS:
             items = self.items[key]
-            rows = self.rows if key == "pret" else []
+            rows = self.tables.get(key, [])
             if not items and not rows:
                 continue
             block = [f"{icon} **{heading}**"] if fence else [f"{heading} :"]
@@ -754,11 +765,12 @@ class Report:
                 if not put(lines):
                     hidden += 1
             if rows:
-                body = [(clean_text(x, 28), clean_text(y, 14), clean_text(z, 12)) for x, y, z in rows]
+                head, limits = REPORT_TABLES[key]
+                body = [tuple(esc(c, lim) for c, lim in zip(row, limits)) for row in rows]
 
                 def table(n: int) -> list[str]:
-                    data = [("service", "image", "vue depuis")] + body[:n]
-                    widths = [max(len(r[i]) for r in data) for i in range(3)]
+                    data = [head] + body[:n]
+                    widths = [max(len(r[i]) for r in data) for i in range(len(head))]
                     lines = ["  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip() for r in data]
                     return ["```"] + lines + ["```"] if fence else lines
 
@@ -1463,9 +1475,41 @@ class Updater:
             out.setdefault(e.svc.unit, []).append(e)
         return out
 
-    def cycle(self, apply: bool) -> int:
-        evals = [self.evaluate(s) for s in self.cfg.services]
-        self._cleanup_state(evals)
+    def select(self, names: list[str] | None) -> list[Service]:
+        """Services désignés par leur nom ou celui de leur groupe, dans l'ordre du fichier ; aucun nom : tous."""
+        if not names:
+            return list(self.cfg.services)
+        chosen: list[Service] = []
+        for n in names:
+            match = [s for s in self.cfg.services if s.name == n or s.group == n]
+            if not match:
+                raise UpdateError(f"inconnu : {n} (services : {', '.join(s.name for s in self.cfg.services)})")
+            chosen += [s for s in match if s not in chosen]
+        return [s for s in self.cfg.services if s in chosen]
+
+    def status_row(self, e: Eval) -> tuple[str, str, str]:
+        """(service, état, détail) pour le tableau d'état."""
+        n = e.svc.name
+        if e.status == "uptodate":
+            return n, "à jour", ""
+        if e.status in ("skipped", "error"):
+            return n, "ERREUR" if e.status == "error" else "ignoré", e.detail
+        age = int(self.now()) - e.first_seen
+        if e.failed_before:
+            return n, "à revoir", f"image {e.remote[7:19]} déjà tentée sans succès"
+        if e.eligible:
+            return n, "prête", f"image {e.remote[7:19]}, mode {e.svc.mode}, vue depuis {fmt_duration(age)}"
+        left = (self._ready_at(e) - int(self.now())) if e.fast else (e.svc.cooldown - age)
+        return n, "différée", f"image {e.remote[7:19]}, encore {fmt_duration(max(0, left))}" + (" (sécurité)" if e.fast else "")
+
+    def cycle(self, apply: bool, names: list[str] | None = None, notify: bool = False) -> int:
+        services = self.select(names)
+        partial = len(services) != len(self.cfg.services)
+        if names:
+            self.log(f"scan limité à : {', '.join(s.name for s in services)}")
+        evals = [self.evaluate(s) for s in services]
+        if not partial:
+            self._cleanup_state(evals)       # une sélection ne purge rien : un même digest peut servir un service non évalué
         self.alerts_on = apply
         if not apply:
             # diagnostic de calibrage : la veille de sécurité a besoin de la version lue dans l'image en cours
@@ -1519,20 +1563,23 @@ class Updater:
             fresh = {k: v for k, v in errs.items() if self.state.data["errors"].get(k) != v}
             for k, v in fresh.items():
                 self.report.add("erreur", k, v, "warn")
-            self.state.data["errors"] = errs
+            known = self.state.data["errors"]
+            self.state.data["errors"] = ({k: v for k, v in known.items() if k not in {s.name for s in services}} | errs
+                                         if partial else errs)
             horizon = int(self.now()) - 120 * 86400
             self.state.data["alerts"] = {k: v for k, v in self.state.data["alerts"].items() if v >= horizon}
+        if notify:
+            if not self.run.dry_run and not self.notifier._url():
+                self.log("rapport non envoyé : aucune URL de notification lisible (docker-update set-webhook)")
+                failures += 1
+            for e in evals:
+                self.report.add_row("etat", *self.status_row(e))
         self.flush()
         self.save_state()
         return 1 if failures else 0
 
     def now_cmd(self, names: list[str], yes: bool) -> int:
-        selected: list[Service] = []
-        for n in names:
-            match = [s for s in self.cfg.services if s.name == n or s.group == n]
-            if not match:
-                raise UpdateError(f"inconnu : {n} (services : {', '.join(s.name for s in self.cfg.services)})")
-            selected += [s for s in match if s not in selected]
+        selected = self.select(names)
         held = [s.name for s in selected if self.held(s)]
         if held:
             raise UpdateError(f"en pause : {', '.join(held)} (utilisez d'abord `unhold`)")
@@ -1617,8 +1664,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="ne pas exiger une configuration appartenant à root (tests uniquement)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("validate")
-    sub.add_parser("check")
-    sub.add_parser("run")
+    p_check = sub.add_parser("check", help="scan sans rien appliquer : tous les services, ou ceux désignés")
+    p_check.add_argument("names", nargs="*", metavar="NOM")
+    p_check.add_argument("--notify", action="store_true", help="envoie aussi le tableau d'état sur Discord")
+    p_run = sub.add_parser("run", help="scan, applique le « auto » prêt, notifie : tous les services, ou ceux désignés")
+    p_run.add_argument("names", nargs="*", metavar="NOM")
     sub.add_parser("status")
     sub.add_parser("notify-test")
     sub.add_parser("set-webhook", help="enregistre l'URL du webhook (saisie masquée ou entrée standard)")
@@ -1652,9 +1702,9 @@ def main(argv: list[str] | None = None) -> int:
         notifier = Notifier(cfg.settings.notify_url_file, cfg.settings.notify_format, log, dry_run=args.dry_run)
         up = Updater(cfg, runner, notifier, State(cfg.settings.state_file), log=log, persist=not args.dry_run)
         if args.cmd == "check":
-            return up.cycle(apply=False)
+            return up.cycle(apply=False, names=args.names, notify=args.notify)
         if args.cmd == "run":
-            return up.cycle(apply=True)
+            return up.cycle(apply=True, names=args.names)
         if args.cmd == "now":
             return up.now_cmd(args.names, args.yes)
         if args.cmd == "notify-test":

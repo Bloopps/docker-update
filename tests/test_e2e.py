@@ -120,6 +120,18 @@ cooldown = "{cooldown}"
         self.assertEqual(self.image(), "id-" + dig(2)[7:19])
         self.assertNotIn("removed", self.world())
 
+    def test_check_and_run_accept_names(self):
+        r = self.du("check", "traefik")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("scan limité à : traefik", r.stdout)
+        r = self.du("check", "inconnu")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("inconnu : inconnu", r.stdout)
+        self.assertEqual(self.image(), "id-old", "check n'applique rien")
+        r = self.du("run", "traefik")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.image(), "id-" + dig(2)[7:19])
+
     def test_stopped_container_is_left_alone(self):
         w = self.world()
         w["containers"][f"{self.dir}|traefik"]["status"] = "exited"
