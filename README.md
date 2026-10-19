@@ -5,6 +5,37 @@ Mises à jour automatiques d'images **Docker Compose**, sans conteneur qui déti
 Un outil en Python (bibliothèque standard seulement, Python ≥ 3.11) qui tourne **sur l'hôte**, lancé par un minuteur `systemd`.
 Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
 
+## Installation
+
+Le binaire Go est statique (aucune dépendance, ni Python ni bibliothèque système) pour Linux **amd64** et **arm64**.
+Il lui faut seulement `docker` (avec le plugin `compose`) sur l'hôte, et `regctl` si `registry_tool = "regctl"`.
+Aucune version publiée n'existe pour l'instant : on le compile, ou on prend l'artefact `docker-update-linux` de la CI
+(`dist/docker-update-linux-amd64` ou `-arm64`, avec `SHA256SUMS`).
+
+```sh
+# Compilation (Go 1.27 ou plus récent)
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty)" \
+  -o docker-update ./cmd/docker-update
+./docker-update version
+
+# Installation (root)
+sudo install -d -m 755 -o root -g root /etc/docker-update
+sudo install -m 755 -o root -g root docker-update /usr/local/sbin/docker-update
+sudo install -m 644 -o root -g root updates.toml /etc/docker-update/updates.toml     # partir de examples/
+sudo install -m 644 -o root -g root deploy/docker-update.service deploy/docker-update.timer /etc/systemd/system/
+sudo install -d -m 700 -o root -g root /var/lib/docker-update /var/lib/docker-update/docker
+
+# Webhook (saisie masquée, jamais en argument) puis vérification, sans rien appliquer
+sudo docker-update --config /etc/docker-update/updates.toml set-webhook     # écrit notify_url_file
+sudo docker-update --config /etc/docker-update/updates.toml validate
+sudo docker-update --config /etc/docker-update/updates.toml --dry-run check
+sudo systemctl daemon-reload && sudo systemctl enable --now docker-update.timer
+```
+
+L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n'a pas validé le résultat et basculé sur
+`run`. La procédure complète, avec les critères d'acceptation de chaque étape et le retour arrière, est dans
+[`docs/AGENT.md`](docs/AGENT.md). Le script Python reste en place tant que la phase de bascule n'est pas faite.
+
 ## Ce qu'il fait
 
 - **Délai de sécurité mesuré par l'outil.** Une image n'est appliquée que si son *digest* est resté le même pendant
@@ -187,10 +218,5 @@ unique et la commande `set-webhook` (20) et le scan ciblé (10), l'ont été de 
 Un second test de mutation, sur la veille des notes de release, a introduit 33 défauts (accélération par une note, pré-version
 non ignorée, mot `security` seul pris pour fort, `@everyone` non neutralisé, doublon d'alerte…) : 32 détectés après
 correction de 5 angles morts des tests ; le dernier est équivalent (valeur par défaut jamais lue).
-
-## Installation
-
-Voir [`docs/AGENT.md`](docs/AGENT.md) : procédure pas à pas, avec ce qui se vérifie en lecture seule, les critères
-d'acceptation de chaque étape et le retour arrière.
 
 Licence : à choisir par le propriétaire du dépôt.
