@@ -19,7 +19,7 @@ aucun changement de comportement pendant le portage (phases 0 à 6). En cas de d
 | 0 | `go.mod`, squelette, CI Go, ce document | fait |
 | 1 | `textutil` : durées, fenêtres, `CleanText`, versions, `split_ref`, motifs de notes, `compact_*` | fait |
 | 2 | `tomlmini` + `config` (clés supprimées, groupes, `examples/`) + fuzz | fait |
-| 3 | `state`, `notify` (Notifier, Report), `github`, `dockerx` | à faire |
+| 3 | `state`, `notify` (Notifier, Report, webhook), `github`, `smoke`, `dockerx` | fait |
 | 4 | `updater` (evaluate, security, release notes, apply, cleanup, cycle, now, select, status) | à faire |
 | 5 | `cli` + `main`, parité bout en bout (`DU_BIN`), test différentiel | à faire |
 | 6 | Bascule : suppression du Python, docs, unité systemd, mutation manuelle | à faire |
@@ -51,6 +51,18 @@ Ajustements au plan : aucun pour l'instant. Le fuzz court (10 s) du lecteur TOML
 Contrôles de parité de la phase 2 (scripts jetables, non conservés dans le dépôt) : environ 25 000 documents TOML (exemples mutés, cas limites) lus par
 `tomllib` et par le lecteur Go : mêmes acceptations, mêmes valeurs, aucun refus de Go sur un TOML pris en charge ; environ 16 000 configurations aléatoires passées à
 `parse_config` et à `config.Load` : mêmes acceptations, mêmes valeurs, mêmes messages d'erreur (hors texte de syntaxe d'expression, écart n° 7).
+
+Écarts de la phase 3 (`state`, `notify`, `github`, `smoke`, `dockerx`) :
+
+12. **État** : Go omet les clés vides d'un cache GitHub (`etag` vide, `err` à 0, `full` à 0, `ok` faux) ; Python les écrit parfois (`"etag": ""`). Les deux versions
+    lisent l'absence et la valeur vide de la même façon. Pour un état « plein » le fichier réécrit est identique octet pour octet à celui de Python
+    (`TestStateWrittenByPythonLoadsAndIsRewrittenIdentically`, fichier produit par `State.save` du Python). Les clés inconnues d'un enregistrement ne sont pas conservées.
+13. **Entrée standard des commandes** : `subprocess.run` hérite de l'entrée standard de l'outil ; Go donne une entrée vide à `docker` (elle peut porter le secret de `set-webhook`).
+14. **Code de retour d'une commande tuée par un signal** : `-signal` comme Python ; une commande non exécutable (droits) donne 126 avec un message (Python : trace).
+15. **Sorties de commandes** : lues en octets puis converties (octets invalides remplacés par U+FFFD, fins de ligne universelles) ; Python en mode texte lèverait une erreur de décodage sur un octet invalide.
+16. **Erreurs d'envoi** (« notification non envoyée (…) ») : le type est `HTTPError`, `TimeoutError` ou `URLError` comme en Python ; pour une erreur d'un autre type, Go donne son nom de type Go. Jamais le texte de l'erreur (il contient l'URL).
+17. **Webhook ntfy** : l'en-tête `Title` remplace chaque caractère non ASCII par `?` (comme `encode("ascii", "replace")`) ; un titre contenant un saut de ligne ferait refuser la requête par `net/http` (Python lèverait `ValueError`) ; les titres sont fabriqués par l'outil, jamais copiés tels quels depuis l'extérieur.
+18. **Délais HTTP** : `http.Client.Timeout` est un délai total (15 s GitHub, 10 s webhook et test de fumée) ; en Python c'est un délai par opération de socket.
 
 ## 4. Inventaire des tests : Python → Go
 
@@ -105,13 +117,13 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestNow | `test_now_still_retries_a_failed_digest` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestDryRun | `test_dry_run_changes_nothing` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestDryRun | `test_real_runner_dry_run_only_prints` | 4 | internal/updater | à faire |
-| test_docker_update.py | TestInfra | `test_runner` | 3 | internal/state, notify, dockerx | à faire |
-| test_docker_update.py | TestInfra | `test_runner_bytes_keeps_exact_bytes` | 3 | internal/state, notify, dockerx | à faire |
-| test_docker_update.py | TestInfra | `test_state_roundtrip_and_corruption` | 3 | internal/state, notify, dockerx | à faire |
-| test_docker_update.py | TestInfra | `test_notifier_discord_payload_and_secret_never_logged` | 3 | internal/state, notify, dockerx | à faire |
-| test_docker_update.py | TestInfra | `test_notifier_without_url_and_other_formats` | 3 | internal/state, notify, dockerx | à faire |
-| test_docker_update.py | TestInfra | `test_http_status_unreachable` | 3 | internal/state, notify, dockerx | à faire |
-| test_docker_update.py | TestInfra | `test_validate` | 3 | internal/state, notify, dockerx | à faire |
+| test_docker_update.py | TestInfra | `test_runner` | 3 | internal/dockerx : `TestRunner` (+ `TestRunnerTextUsesUniversalNewlines`) | fait |
+| test_docker_update.py | TestInfra | `test_runner_bytes_keeps_exact_bytes` | 3 | internal/dockerx : `TestRunnerBytesKeepsExactBytes` | fait |
+| test_docker_update.py | TestInfra | `test_state_roundtrip_and_corruption` | 3 | internal/state : `TestRoundtripAndCorruption` (+ `TestStateWrittenByPythonLoadsAndIsRewrittenIdentically`) | fait |
+| test_docker_update.py | TestInfra | `test_notifier_discord_payload_and_secret_never_logged` | 3 | internal/notify : `TestNotifierDiscordPayloadAndSecretNeverLogged` | fait |
+| test_docker_update.py | TestInfra | `test_notifier_without_url_and_other_formats` | 3 | internal/notify : `TestNotifierWithoutURLAndOtherFormats` | fait |
+| test_docker_update.py | TestInfra | `test_http_status_unreachable` | 3 | internal/smoke : `TestStatusUnreachable` | fait |
+| test_docker_update.py | TestInfra | `test_validate` | 5 | internal/cli | à faire |
 | test_docker_update.py | TestSecurityProperties | `test_compose_config_content_is_never_logged` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestSecurityProperties | `test_commands_never_use_a_shell` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestSecurityProperties | `test_pull_is_by_digest_of_the_evaluated_image` | 4 | internal/updater | à faire |
@@ -149,9 +161,9 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestSecurity | `test_token_not_logged_when_the_api_fails` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestSecurity | `test_notify_mode_service_gets_an_alert_not_an_acceleration` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestSecurity | `test_group_gets_one_accelerated_update` | 4 | internal/updater | à faire |
-| test_docker_update.py | TestGithubGet | `test_ok_headers_and_etag` | 3 | internal/github | à faire |
-| test_docker_update.py | TestGithubGet | `test_token_and_conditional_request` | 3 | internal/github | à faire |
-| test_docker_update.py | TestGithubGet | `test_errors` | 3 | internal/github | à faire |
+| test_docker_update.py | TestGithubGet | `test_ok_headers_and_etag` | 3 | internal/github : `TestGetOKHeadersAndEtag` | fait |
+| test_docker_update.py | TestGithubGet | `test_token_and_conditional_request` | 3 | internal/github : `TestGetTokenAndConditionalRequest` | fait |
+| test_docker_update.py | TestGithubGet | `test_errors` | 3 | internal/github : `TestGetErrors` | fait |
 | test_docker_update.py | TestMain | `test_check_and_run_pass_their_names_and_options_on` | 5 | internal/cli | à faire |
 | test_docker_update.py | TestMain | `test_validate_and_status_and_hold` | 5 | internal/cli | à faire |
 | test_docker_update.py | TestMain | `test_notify_test_command` | 5 | internal/cli | à faire |
@@ -201,7 +213,7 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestReleaseNotes | `test_notify_mode_and_unknown_status_services` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestReleaseNotes | `test_absent_container_is_skipped` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestReleaseNotes | `test_simulation_changes_nothing` | 4 | internal/updater | à faire |
-| test_docker_update.py | TestReleaseBodyLimit | `test_releases_endpoint_accepts_large_bodies` | 3 | internal/github | à faire |
+| test_docker_update.py | TestReleaseBodyLimit | `test_releases_endpoint_accepts_large_bodies` | 3 | internal/github : `TestReleasesEndpointAcceptsLargeBodies` | fait |
 | test_docker_update.py | TestCleanup | `test_previous_image_is_removed_after_a_successful_update` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestCleanup | `test_nothing_is_removed_when_the_update_fails` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestCleanup | `test_nothing_is_removed_without_an_update` | 4 | internal/updater | à faire |
@@ -230,15 +242,15 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_release_alone_accelerates_nothing_even_when_the_advisory_exists_elsewhere` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_nothing_is_repeated_next_time` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_check_logs_both_and_sends_nothing` | 4 | internal/updater | à faire |
-| test_docker_update.py | TestReport | `test_empty` | 3 | internal/notify | à faire |
-| test_docker_update.py | TestReport | `test_title_counts_with_plurals` | 3 | internal/notify | à faire |
-| test_docker_update.py | TestReport | `test_level_is_the_worst_one` | 3 | internal/notify | à faire |
-| test_docker_update.py | TestReport | `test_sections_come_in_order_of_importance` | 3 | internal/notify | à faire |
-| test_docker_update.py | TestReport | `test_ready_versions_are_a_table` | 3 | internal/notify | à faire |
-| test_docker_update.py | TestReport | `test_an_item_shows_its_first_lines_only_and_bounded` | 3 | internal/notify | à faire |
-| test_docker_update.py | TestReport | `test_no_mention_and_no_control_characters` | 3 | internal/notify | à faire |
-| test_docker_update.py | TestReport | `test_the_budget_is_respected_and_the_important_part_survives` | 3 | internal/notify | à faire |
-| test_docker_update.py | TestReport | `test_a_huge_table_is_cut_by_rows_not_by_characters` | 3 | internal/notify | à faire |
+| test_docker_update.py | TestReport | `test_empty` | 3 | internal/notify : `TestReportEmpty` | fait |
+| test_docker_update.py | TestReport | `test_title_counts_with_plurals` | 3 | internal/notify : `TestReportTitleCountsWithPlurals` | fait |
+| test_docker_update.py | TestReport | `test_level_is_the_worst_one` | 3 | internal/notify : `TestReportLevelIsTheWorstOne` | fait |
+| test_docker_update.py | TestReport | `test_sections_come_in_order_of_importance` | 3 | internal/notify : `TestReportSectionsComeInOrderOfImportance` | fait |
+| test_docker_update.py | TestReport | `test_ready_versions_are_a_table` | 3 | internal/notify : `TestReportReadyVersionsAreATable` | fait |
+| test_docker_update.py | TestReport | `test_an_item_shows_its_first_lines_only_and_bounded` | 3 | internal/notify : `TestReportAnItemShowsItsFirstLinesOnlyAndBounded` | fait |
+| test_docker_update.py | TestReport | `test_no_mention_and_no_control_characters` | 3 | internal/notify : `TestReportNoMentionAndNoControlCharacters` | fait |
+| test_docker_update.py | TestReport | `test_the_budget_is_respected_and_the_important_part_survives` | 3 | internal/notify : `TestReportBudgetIsRespectedAndTheImportantPartSurvives` | fait |
+| test_docker_update.py | TestReport | `test_a_huge_table_is_cut_by_rows_not_by_characters` | 3 | internal/notify : `TestReportAHugeTableIsCutByRowsNotByCharacters` | fait |
 | test_docker_update.py | TestReportDelivery | `test_one_message_for_the_whole_pass` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestReportDelivery | `test_security_alerts_and_updates_share_the_same_message` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestReportDelivery | `test_nothing_new_means_no_message` | 4 | internal/updater | à faire |
@@ -249,18 +261,18 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestReportDelivery | `test_ntfy_and_json_formats_get_the_same_single_report` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestReportDelivery | `test_reports_do_not_pile_up_between_passes` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestReportDelivery | `test_notification_failure_does_not_break_the_pass` | 4 | internal/updater | à faire |
-| test_docker_update.py | TestSetWebhook | `test_url_is_written_with_600_and_never_printed` | 3 et 5 | internal/notify, cli | à faire |
-| test_docker_update.py | TestSetWebhook | `test_the_new_url_is_the_one_used_for_notifications` | 3 et 5 | internal/notify, cli | à faire |
-| test_docker_update.py | TestSetWebhook | `test_an_existing_file_is_replaced_and_its_rights_fixed` | 3 et 5 | internal/notify, cli | à faire |
-| test_docker_update.py | TestSetWebhook | `test_invalid_urls_are_refused_without_echoing_them` | 3 et 5 | internal/notify, cli | à faire |
-| test_docker_update.py | TestSetWebhook | `test_discord_variants_are_accepted` | 3 et 5 | internal/notify, cli | à faire |
-| test_docker_update.py | TestSetWebhook | `test_only_the_first_line_is_read` | 3 et 5 | internal/notify, cli | à faire |
-| test_docker_update.py | TestSetWebhook | `test_other_formats_accept_any_http_url` | 3 et 5 | internal/notify, cli | à faire |
-| test_docker_update.py | TestSetWebhook | `test_a_target_file_is_required` | 3 et 5 | internal/notify, cli | à faire |
-| test_docker_update.py | TestSetWebhook | `test_dry_run_writes_nothing` | 3 et 5 | internal/notify, cli | à faire |
-| test_docker_update.py | TestSetWebhook | `test_interactive_input_is_hidden` | 3 et 5 | internal/notify, cli | à faire |
-| test_docker_update.py | TestSetWebhook | `test_the_url_is_never_a_command_line_argument` | 3 et 5 | internal/notify, cli | à faire |
-| test_docker_update.py | TestSetWebhook | `test_removed_keys_are_explained` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_url_is_written_with_600_and_never_printed` | 3 | internal/notify : `TestSetWebhookURLIsWrittenWith600AndNeverPrinted` | fait |
+| test_docker_update.py | TestSetWebhook | `test_the_new_url_is_the_one_used_for_notifications` | 3 | internal/notify : `TestSetWebhookURLIsWrittenWith600AndNeverPrinted` | fait |
+| test_docker_update.py | TestSetWebhook | `test_an_existing_file_is_replaced_and_its_rights_fixed` | 3 | internal/notify : `TestSetWebhookAnExistingFileIsReplacedAndItsRightsFixed` | fait |
+| test_docker_update.py | TestSetWebhook | `test_invalid_urls_are_refused_without_echoing_them` | 3 | internal/notify : `TestSetWebhookInvalidURLsAreRefusedWithoutEchoingThem` | fait |
+| test_docker_update.py | TestSetWebhook | `test_discord_variants_are_accepted` | 3 | internal/notify : `TestSetWebhookDiscordVariantsAreAccepted` | fait |
+| test_docker_update.py | TestSetWebhook | `test_only_the_first_line_is_read` | 3 | internal/notify : `TestSetWebhookOnlyTheFirstLineIsRead` | fait |
+| test_docker_update.py | TestSetWebhook | `test_other_formats_accept_any_http_url` | 3 | internal/notify : `TestSetWebhookOtherFormatsAcceptAnyHTTPURL` | fait |
+| test_docker_update.py | TestSetWebhook | `test_a_target_file_is_required` | 3 | internal/notify : `TestSetWebhookATargetFileIsRequired` | fait |
+| test_docker_update.py | TestSetWebhook | `test_dry_run_writes_nothing` | 3 | internal/notify : `TestSetWebhookDryRunWritesNothing` | fait |
+| test_docker_update.py | TestSetWebhook | `test_interactive_input_is_hidden` | 5 | internal/cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_the_url_is_never_a_command_line_argument` | 5 | internal/cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_removed_keys_are_explained` | 2 | internal/config : `TestRemovedKeys` | fait |
 | test_docker_update.py | TestManualScan | `test_check_on_a_selection_scans_only_those` | 4 et 5 | internal/updater, cli | à faire |
 | test_docker_update.py | TestManualScan | `test_no_name_scans_everything` | 4 et 5 | internal/updater, cli | à faire |
 | test_docker_update.py | TestManualScan | `test_a_group_name_selects_all_its_members` | 4 et 5 | internal/updater, cli | à faire |

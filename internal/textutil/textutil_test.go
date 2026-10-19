@@ -159,7 +159,7 @@ func TestCleanText(t *testing.T) {
 		t.Errorf("runes : %d", len([]rune(got)))
 	}
 	// Espaces insécables, séparateurs de ligne, caractères de formatage : remplacés par une espace.
-	if got := CleanText("a b c​d‮e", 200); got != "a b c d e" {
+	if got := CleanText("a\u00a0b\u2028c\u200bd\u202ee", 200); got != "a b c d e" {
 		t.Errorf("got %q", got)
 	}
 	if got := CleanText("naïve — 日本語 ✅", 200); got != "naïve — 日本語 ✅" {

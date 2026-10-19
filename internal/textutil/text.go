@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 )
 
 // CleanText nettoie un texte venu de l'extérieur : sans caractères de contrôle, sur une seule ligne, borné à
@@ -146,8 +145,6 @@ func Repr(s string) string {
 			b.WriteString(`\t`)
 		case r < 0x20 || r == 0x7f:
 			fmt.Fprintf(&b, `\x%02x`, r)
-		case r == utf8.RuneError:
-			b.WriteString(`�`)
 		case unicode.IsPrint(r):
 			b.WriteRune(r)
 		case r < 0x100:

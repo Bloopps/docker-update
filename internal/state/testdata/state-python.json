@@ -1,0 +1,100 @@
+{
+ "advisories": {
+  "traefik/traefik": {
+   "etag": "W/\"abc123\"",
+   "fetched": 1777630000,
+   "items": [
+    {
+     "cve": "CVE-2026-12345",
+     "id": "GHSA-2222-3333-4444",
+     "pub": 1777629600,
+     "ranges": [
+      "< 3.6.3",
+      ">= 4.0.0, < 4.1.0"
+     ],
+     "sev": "high",
+     "summary": "Contournement d'authentification \u00e9 \u2014 \ud83d\ude00 <b>&</b>",
+     "withdrawn": false
+    },
+    {
+     "cve": "",
+     "id": "GHSA-cccc-2222-3333",
+     "pub": 1775037600,
+     "ranges": [],
+     "sev": "low",
+     "summary": "x",
+     "withdrawn": true
+    }
+   ],
+   "ok": true
+  }
+ },
+ "alerts": {
+  "correctif:traefik:sha256:abababababababababababababababababababababababababababababababab": 1777630100,
+  "release-version:app": 1777630200
+ },
+ "errors": {
+  "homepage": "manifeste distant illisible pour homepage:latest (unauthorized) \u00e9"
+ },
+ "holds": [
+  "tirelire",
+  "wg-easy"
+ ],
+ "images": {
+  "ghcr.io/org/app:main": {
+   "digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+   "failed": false,
+   "first_seen": 1777000000,
+   "notified": true
+  },
+  "traefik:v3.6": {
+   "digest": "sha256:abababababababababababababababababababababababababababababababab",
+   "failed": true,
+   "first_seen": 1777629600,
+   "notified": false
+  }
+ },
+ "releases": {
+  "traefik/traefik": {
+   "etag": "\"e1\"",
+   "fetched": 1777630300,
+   "full": 1777600000,
+   "items": [
+    {
+     "draft": false,
+     "hits": [
+      {
+       "k": "CVE",
+       "t": "CVE-2026-12345",
+       "w": false,
+       "x": "Fixes CVE-2026-12345 and a path traversal. Improve security of the login \u00e9 page."
+      },
+      {
+       "k": "path traversal",
+       "t": "path traversal",
+       "w": false,
+       "x": "Fixes CVE-2026-12345 and a path traversal. Improve security of the login \u00e9 page."
+      },
+      {
+       "k": "security",
+       "t": "security",
+       "w": true,
+       "x": "Fixes CVE-2026-12345 and a path traversal. Improve security of the login \u00e9 page."
+      }
+     ],
+     "pre": false,
+     "pub": 1777710600,
+     "tag": "v2.45.1"
+    },
+    {
+     "draft": false,
+     "hits": [],
+     "pre": true,
+     "pub": 1777797000,
+     "tag": "v2.46.0-rc1"
+    }
+   ],
+   "ok": true
+  }
+ }
+}

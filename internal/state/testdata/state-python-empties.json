@@ -1,0 +1,54 @@
+{
+ "advisories": {
+  "a/b": {
+   "err": 403,
+   "fetched": 5,
+   "items": []
+  },
+  "c/d": {
+   "etag": "",
+   "fetched": 6,
+   "items": [],
+   "ok": true
+  },
+  "e/f": {
+   "err": 0,
+   "fetched": 7,
+   "items": []
+  }
+ },
+ "alerts": {
+  "correctif:traefik:sha256:abababababababababababababababababababababababababababababababab": 1777630100,
+  "release-version:app": 1777630200
+ },
+ "errors": {
+  "homepage": "manifeste distant illisible pour homepage:latest (unauthorized) \u00e9"
+ },
+ "holds": [
+  "tirelire",
+  "wg-easy"
+ ],
+ "images": {
+  "ghcr.io/org/app:main": {
+   "digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+   "failed": false,
+   "first_seen": 1777000000,
+   "notified": true
+  },
+  "traefik:v3.6": {
+   "digest": "sha256:abababababababababababababababababababababababababababababababab",
+   "failed": true,
+   "first_seen": 1777629600,
+   "notified": false
+  }
+ },
+ "releases": {
+  "a/b": {
+   "etag": "",
+   "fetched": 8,
+   "full": 0,
+   "items": [],
+   "ok": true
+  }
+ }
+}
