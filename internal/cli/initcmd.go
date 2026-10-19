@@ -71,7 +71,7 @@ func initCmd(env *Env, g globals, sub subArgs, log func(string)) (int, error) {
 		}
 	}
 	run := env.NewRunner(g.dryRun, log)
-	ck := &checker{run: run, euid: env.Euid(), cfgPath: g.config, settings: settings, unitDir: env.UnitDir, binary: env.Binary,
+	ck := &checker{run: run, euid: env.Euid(), cfgPath: g.config, settings: settings, unitDir: env.UnitDir, binary: env.InstallBin,
 		getenv: env.Getenv, dial: env.Dial, trusted: env.CheckTrusted}
 	log("Vérification de l'installation (lecture seule) :")
 	blocked, warned := printChecks(ck.all(sub.flags["--skip-checks"]), log)
@@ -89,6 +89,35 @@ func initCmd(env *Env, g globals, sub subArgs, log func(string)) (int, error) {
 	}
 	if warned > 0 {
 		log("Les points ⚠ n'empêchent pas init ; ils se corrigent ensuite (init --check les rejoue).")
+	}
+	p := newPrompter(env)
+	if !sub.flags["--no-install"] {
+		steps, reload := installPlan(env, settings, g.config)
+		if len(steps) > 0 {
+			log("À installer :")
+			for _, s := range steps {
+				log("  - " + s.what)
+			}
+			switch {
+			case g.dryRun:
+				log("[simulation] rien n'est installé")
+			case env.Euid() != 0:
+				log("init s'arrête : l'installation demande root. Relancez avec sudo : sudo docker-update init")
+				return 1, nil
+			case !yes && !p.yes("Installer maintenant ?"):
+				log("installation ignorée (relancez init pour la refaire)")
+			default:
+				if err := runInstall(run, steps, reload, log); err != nil {
+					log("installation interrompue : " + err.Error())
+					return 1, nil
+				}
+				log("Vérification après installation :")
+				if blocked, _ := printChecks(ck.all(sub.flags["--skip-checks"]), log); blocked > 0 {
+					log("init s'arrête : corrigez les points ✗ ci-dessus puis relancez.")
+					return 1, nil
+				}
+			}
+		}
 	}
 	if fileThere && !sub.flags["--force"] {
 		log(fmt.Sprintf("%s existe déjà : `docker-update add` ajoute un service ; `init --force` repart de zéro (l'ancien fichier est sauvegardé).", g.config))
@@ -135,7 +164,6 @@ func initCmd(env *Env, g globals, sub subArgs, log func(string)) (int, error) {
 		}
 	}
 
-	p := newPrompter(env)
 	var ierr error
 	if yes {
 		selectAuto(units, sub, mode, log)
@@ -208,6 +236,7 @@ func finishInit(env *Env, g globals, p *prompter, yes bool, chosen []*unit, log 
 			}
 		}
 	}
+	enableTimer(env, env.NewRunner(g.dryRun, log), p, yes, log)
 	auto := 0
 	for _, u := range chosen {
 		if u.mode == "auto" {

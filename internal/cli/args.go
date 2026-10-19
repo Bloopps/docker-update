@@ -125,7 +125,7 @@ var subcommands = map[string]subSpec{
 	"now":         {names: "+", flags: []string{"--yes"}},
 	"version":     {},
 	"list":        {},
-	"init":        {flags: []string{"--yes", "--check", "--force", "--skip-checks"}, valued: []string{"--mode", "--include", "--exclude"}},
+	"init":        {flags: []string{"--yes", "--check", "--force", "--skip-checks", "--no-install"}, valued: []string{"--mode", "--include", "--exclude"}},
 	"edit":        {flags: []string{"--yes"}},
 	"export":      {},
 	"rename":      {names: "+", flags: []string{"--group", "--yes"}},
@@ -225,7 +225,7 @@ Commandes :
   status              affiche l'état mémorisé
   notify-test         envoie un message de test
   set-webhook         enregistre l'URL du webhook (saisie masquée ou entrée standard, jamais en argument)
-  init                vérifie l'installation, puis crée la configuration à partir des conteneurs qui tournent (init --check : vérifications seules)
+  init                installe (binaire, dossiers, unités systemd), vérifie, puis crée la configuration à partir des conteneurs qui tournent (--check : vérifications seules ; --no-install : sans installer)
   list                tableau des services configurés (lecture seule)
   add NOM [options]   ajoute un service au fichier de configuration (aperçu, confirmation, sauvegarde, validation)
   rename ANCIEN NOUVEAU  renomme un service (ou --group : un groupe) dans le fichier et dans l'état

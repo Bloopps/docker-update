@@ -13,16 +13,21 @@ import (
 
 // fakeDocker répond aux commandes de lecture par leur ligne exacte ; toute commande inconnue, ou qui modifie, fait échouer le test.
 type fakeDocker struct {
-	t     *testing.T
-	reply map[string]dockerx.Result
-	seen  []string
+	t         *testing.T
+	reply     map[string]dockerx.Result
+	seen      []string
+	systemctl []string
 }
 
 func (f *fakeDocker) Run(argv []string, mutating bool, _ time.Duration) dockerx.Result {
 	line := strings.Join(argv, " ")
 	f.seen = append(f.seen, line)
-	if mutating {
+	if mutating && argv[0] != "systemctl" { // seul systemctl (unités, minuteur) est modifié par init
 		f.t.Fatalf("init ne modifie rien côté docker : %s", line)
+	}
+	if mutating {
+		f.systemctl = append(f.systemctl, line)
+		return dockerx.Result{}
 	}
 	if r, ok := f.reply[line]; ok {
 		return r
@@ -132,10 +137,30 @@ func newInitRig(t *testing.T) *initRig {
 	r.env.Euid = func() int { return 0 }
 	r.env.UnitDir = filepath.Join(r.dir, "systemd")
 	r.env.Binary = bin
+	r.env.InstallBin = bin
 	r.env.Getenv = func(string) string { return "" }
 	r.env.Dial = func(string) error { return nil }
 	r.env.Now = func() time.Time { return time.Date(2026, 10, 19, 15, 4, 5, 0, time.Local) }
-	return &initRig{rig: r, docker: d, paths: st}
+	ir := &initRig{rig: r, docker: d, paths: st}
+	ir.preinstall()
+	return ir
+}
+
+// preinstall : dossiers et unités déjà en place (le cas courant) ; l'installation par init a ses propres tests.
+func (r *initRig) preinstall() {
+	r.t.Helper()
+	for _, d := range []string{r.env.UnitDir, filepath.Dir(r.paths.LockFile), filepath.Dir(r.paths.NotifyURLFile), filepath.Dir(r.paths.StateFile),
+		filepath.Join(filepath.Dir(r.paths.StateFile), "docker")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			r.t.Fatal(err)
+		}
+	}
+	svc := "[Service]\nExecStart=/usr/local/sbin/docker-update --config /etc/docker-update/updates.toml check\n"
+	for f, body := range map[string]string{"docker-update.service": svc, "docker-update.timer": "[Timer]\n"} {
+		if err := os.WriteFile(filepath.Join(r.env.UnitDir, f), []byte(body), 0o644); err != nil {
+			r.t.Fatal(err)
+		}
+	}
 }
 
 func (r *initRig) installEverything() {
@@ -224,9 +249,9 @@ func TestInitCheckAllGreenAndEachFailure(t *testing.T) {
 			return func() { r.env.Dial = old }
 		}},
 		{"binaire absent", []string{"⚠ Binaire", "introuvable"}, func() func() {
-			old := r.env.Binary
-			r.env.Binary = filepath.Join(r.dir, "nope")
-			return func() { r.env.Binary = old }
+			old := r.env.InstallBin
+			r.env.InstallBin = filepath.Join(r.dir, "nope")
+			return func() { r.env.InstallBin = old }
 		}},
 		{"webhook absent", []string{"⚠ Webhook", "set-webhook"}, func() func() {
 			os.Rename(r.paths.NotifyURLFile, r.paths.NotifyURLFile+".x")
@@ -639,5 +664,147 @@ func TestInitBlocksWhenTheConfigurationFolderCannotBeUsed(t *testing.T) {
 	r.must("install -d -m 755 -o root -g root")
 	if r.docker.ran("docker ps") {
 		t.Fatal("pas de découverte")
+	}
+}
+
+// ── installation par init ──
+
+// bare : une machine neuve (ni dossiers ni unités ni binaire installé) ; le binaire en cours est « src ».
+func newBareRig(t *testing.T) *initRig {
+	r := newInitRig(t)
+	for _, d := range []string{r.env.UnitDir, filepath.Dir(r.paths.StateFile), filepath.Dir(r.paths.LockFile), filepath.Dir(r.paths.NotifyURLFile)} {
+		os.RemoveAll(d)
+	}
+	r.env.InstallBin = filepath.Join(r.dir, "sbin", "docker-update")
+	return r
+}
+
+func TestInitInstallsEverythingItself(t *testing.T) {
+	r := newBareRig(t)
+	if code := r.run("init", "--yes"); code != 0 {
+		t.Fatalf("code %d\n%s", code, r.out)
+	}
+	for _, d := range []string{filepath.Dir(r.cfg), filepath.Dir(r.paths.StateFile), filepath.Join(filepath.Dir(r.paths.StateFile), "docker"), filepath.Dir(r.paths.LockFile)} {
+		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
+			t.Fatalf("dossier %s non créé", d)
+		}
+	}
+	for _, d := range []string{filepath.Dir(r.paths.StateFile), filepath.Join(filepath.Dir(r.paths.StateFile), "docker")} {
+		if fi, _ := os.Stat(d); fi.Mode().Perm() != 0o700 {
+			t.Fatalf("%s doit être en 700 : %v", d, fi.Mode())
+		}
+	}
+	fi, err := os.Stat(r.env.InstallBin)
+	if err != nil || fi.Mode().Perm() != 0o755 {
+		t.Fatalf("binaire installé : %v %v", err, fi)
+	}
+	if !sameContent(r.env.Binary, r.env.InstallBin) {
+		t.Fatal("le binaire installé doit être une copie du binaire en cours")
+	}
+	svc, err := os.ReadFile(filepath.Join(r.env.UnitDir, "docker-update.service"))
+	if err != nil || !strings.Contains(string(svc), "ExecStart="+r.env.InstallBin+" --config "+r.cfg+" check") || strings.Contains(string(svc), "tirelire") {
+		t.Fatalf("unité de service : %v\n%s", err, svc)
+	}
+	if fi, _ := os.Stat(filepath.Join(r.env.UnitDir, "docker-update.timer")); fi == nil || fi.Mode().Perm() != 0o644 {
+		t.Fatal("minuteur non écrit en 644")
+	}
+	if join(r.docker.systemctl) != "systemctl daemon-reload,systemctl enable --now docker-update.timer" {
+		t.Fatalf("commandes systemctl : %v", r.docker.systemctl)
+	}
+	if _, there := exists(r.cfg); !there {
+		t.Fatal("la configuration doit être écrite ensuite")
+	}
+	r.must("À installer :")
+	r.must("Vérification après installation")
+	r.must("minuteur activé")
+}
+
+func TestInitInstallNeedsRootAndAsksFirst(t *testing.T) {
+	r := newBareRig(t)
+	r.env.Euid = func() int { return 1000 }
+	if code := r.run("init", "--yes"); code != 1 {
+		t.Fatalf("code %d", code)
+	}
+	r.must("sudo docker-update init")
+	if _, there := exists(r.env.InstallBin); there || len(r.docker.systemctl) != 0 {
+		t.Fatal("rien n'est installé sans root")
+	}
+	// interactif, refus : rien n'est installé, la suite continue
+	r.fresh()
+	r.env.Euid = func() int { return 0 }
+	r.env.Stdin = strings.NewReader("n\n" + strings.Repeat("\n", 40))
+	r.run("init")
+	r.must("installation ignorée")
+	if _, there := exists(r.env.InstallBin); there || len(r.docker.systemctl) != 0 {
+		t.Fatal("refus : rien n'est installé")
+	}
+}
+
+func TestInitInstallDryRunNoInstallAndExistingUnitsAreKept(t *testing.T) {
+	r := newBareRig(t)
+	if code := r.run("--dry-run", "init", "--yes"); code != 0 {
+		t.Fatalf("code %d\n%s", code, r.out)
+	}
+	r.must("[simulation] rien n'est installé")
+	if _, there := exists(r.env.InstallBin); there || len(r.docker.systemctl) != 0 {
+		t.Fatal("simulation : rien n'est installé")
+	}
+	r.fresh()
+	if code := r.run("init", "--yes", "--no-install"); code != 0 {
+		t.Fatalf("code %d\n%s", code, r.out)
+	}
+	if _, there := exists(r.env.InstallBin); there {
+		t.Fatal("--no-install : pas de binaire installé")
+	}
+	// une unité adaptée par l'utilisateur n'est jamais écrasée
+	r = newBareRig(t)
+	os.MkdirAll(r.env.UnitDir, 0o755)
+	mine := filepath.Join(r.env.UnitDir, "docker-update.service")
+	os.WriteFile(mine, []byte("[Service]\n# adaptée\n"), 0o644)
+	if code := r.run("init", "--yes"); code != 0 {
+		t.Fatalf("code %d\n%s", code, r.out)
+	}
+	if b, _ := os.ReadFile(mine); string(b) != "[Service]\n# adaptée\n" {
+		t.Fatalf("unité écrasée : %s", b)
+	}
+}
+
+func TestInitReplacesAnOutdatedInstalledBinary(t *testing.T) {
+	r := newBareRig(t)
+	os.MkdirAll(filepath.Dir(r.env.InstallBin), 0o755)
+	os.WriteFile(r.env.InstallBin, []byte("ancienne version"), 0o755)
+	if code := r.run("init", "--yes"); code != 0 {
+		t.Fatalf("code %d\n%s", code, r.out)
+	}
+	if !sameContent(r.env.Binary, r.env.InstallBin) {
+		t.Fatal("l'ancien binaire doit être remplacé")
+	}
+}
+
+func TestTheTimerIsEnabledOnlyWithConsent(t *testing.T) {
+	r := newInitRig(t) // unités en place, minuteur non activé
+	log := func(string) {}
+	enable := func(yes bool, answers string) []string {
+		r.docker.systemctl = nil
+		r.env.Stdin = strings.NewReader(answers)
+		enableTimer(r.env, r.docker, newPrompter(r.env), yes, log)
+		return r.docker.systemctl
+	}
+	if got := enable(false, ""); len(got) != 0 {
+		t.Fatalf("sans réponse : %v", got)
+	}
+	if got := enable(false, "n\n"); len(got) != 0 {
+		t.Fatalf("refus : %v", got)
+	}
+	if got := enable(false, "o\n"); join(got) != "systemctl enable --now docker-update.timer" {
+		t.Fatalf("accord : %v", got)
+	}
+	if got := enable(true, ""); len(got) != 1 {
+		t.Fatalf("--yes : %v", got)
+	}
+	r.docker.reply["systemctl is-enabled docker-update.timer"] = dockerx.Result{}
+	r.docker.reply["systemctl is-active docker-update.timer"] = dockerx.Result{}
+	if got := enable(true, ""); len(got) != 0 {
+		t.Fatalf("déjà activé : %v", got)
 	}
 }

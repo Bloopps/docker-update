@@ -178,8 +178,9 @@ func TestNoShellAnywhere(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(callers) != 1 || !strings.HasSuffix(callers[0], "internal/dockerx/runner.go") {
-		t.Errorf("exec.Command ne doit apparaître que dans dockerx/runner.go : %v", callers)
+	// seconde exception : `edit` lance l'éditeur de l'utilisateur sur son terminal (liste d'arguments, jamais de shell)
+	if len(callers) != 2 || !strings.HasSuffix(callers[0], "internal/cli/editcmd.go") || !strings.HasSuffix(callers[1], "internal/dockerx/runner.go") {
+		t.Errorf("exec.Command ne doit apparaître que dans dockerx/runner.go et cli/editcmd.go : %v", callers)
 	}
 	_ = exec.ErrNotFound
 }

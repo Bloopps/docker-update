@@ -51,9 +51,11 @@ type Env struct {
 	// Euid, UnitDir, Binary, Getenv, Dial : ce que les contrôles d'installation lisent (remplacés dans les tests).
 	Euid    func() int
 	UnitDir string
-	Binary  string
-	Getenv  func(string) string
-	Dial    func(addr string) error
+	// Binary est l'exécutable en cours ; InstallBin l'endroit où `init` le pose (celui que lance l'unité systemd).
+	Binary     string
+	InstallBin string
+	Getenv     func(string) string
+	Dial       func(addr string) error
 	// Load relit la configuration écrite par add / delete (défaut : config.Load).
 	Load func(path string) (*config.Config, error)
 	// Edit ouvre un fichier dans l'éditeur de l'utilisateur pour `edit` (défaut : $VISUAL, $EDITOR, vi).
@@ -119,6 +121,9 @@ func (e *Env) fill() {
 	}
 	if e.UnitDir == "" {
 		e.UnitDir = "/etc/systemd/system"
+	}
+	if e.InstallBin == "" {
+		e.InstallBin = "/usr/local/sbin/docker-update"
 	}
 	if e.Binary == "" {
 		e.Binary, _ = os.Executable()

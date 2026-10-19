@@ -43,3 +43,15 @@ jobs:
           name: docker-update-linux
           path: dist/
           if-no-files-found: error
+
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.27.2"
+          cache: false
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
