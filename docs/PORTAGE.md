@@ -18,14 +18,14 @@ aucun changement de comportement pendant le portage (phases 0 à 6). En cas de d
 | --- | --- | --- |
 | 0 | `go.mod`, squelette, CI Go, ce document | fait |
 | 1 | `textutil` : durées, fenêtres, `CleanText`, versions, `split_ref`, motifs de notes, `compact_*` | fait |
-| 2 | `tomlmini` + `config` (clés supprimées, groupes, `examples/`) + fuzz | à faire |
+| 2 | `tomlmini` + `config` (clés supprimées, groupes, `examples/`) + fuzz | fait |
 | 3 | `state`, `notify` (Notifier, Report), `github`, `dockerx` | à faire |
 | 4 | `updater` (evaluate, security, release notes, apply, cleanup, cycle, now, select, status) | à faire |
 | 5 | `cli` + `main`, parité bout en bout (`DU_BIN`), test différentiel | à faire |
 | 6 | Bascule : suppression du Python, docs, unité systemd, mutation manuelle | à faire |
 | 7 | `init`, `add`, `delete`, `list` | à faire |
 
-Ajustements au plan : aucun pour l'instant. Le fuzz de la CI sera ajouté en phase 2, avec le premier test de fuzz.
+Ajustements au plan : aucun pour l'instant. Le fuzz court (10 s) du lecteur TOML est dans la CI depuis la phase 2.
 
 ## 3. Écarts connus
 
@@ -38,6 +38,20 @@ Ajustements au plan : aucun pour l'instant. Le fuzz de la CI sera ajouté en pha
 5. **Frontières de mot `\b`** : en RE2 elles sont ASCII ; les motifs de notes de release les reproduisent à la main avec la notion Unicode de Python (`éCVE-2026-12345` ne correspond pas), voir `TestWordBoundariesAreUnicode`.
 6. **Tables Unicode** : `isprintable()` (Python 3.11) et `unicode.IsPrint` (Go 1.27) viennent de versions différentes d'Unicode ; seuls des caractères récents peuvent différer.
 
+Écarts de la phase 2 (`internal/tomlmini`, `internal/config`) :
+
+7. **Expressions `release_notes_ignore`** : Go compile en RE2 (pas de recherche en avant ni de référence arrière, `\d \w \b` ASCII) alors que
+   Python utilise `re` ; une expression valable en Python mais hors RE2 (`(?=x)`) donne une erreur de configuration claire (« syntaxe RE2 : ni
+   lookahead ni référence arrière ») et non un comportement différent. Le texte de l'erreur de syntaxe vient de Go, pas de Python.
+8. **Entiers TOML sur 64 bits** : `tomllib` lit des entiers arbitraires ; au-delà de 64 bits, « TOML non pris en charge ». Sans effet : aucun réglage n'en demande.
+9. **Fichier de configuration illisible** (droits, répertoire) : Python s'arrête sur une trace (code 1) ; Go répond « configuration illisible : … » (code 2).
+10. **`settings` / `service` de mauvaise forme** (`service = ["a"]`, `[service]` au lieu de `[[service]]`) : Python se comporte de façon imprévisible ; Go refuse avec un message clair.
+11. **Messages TOML** : les erreurs de syntaxe sont celles du lecteur Go (« TOML invalide : … (ligne N) ») ; celles de `tomllib` ne sont pas reproduites mot pour mot (seul le préfixe « configuration illisible : » est commun).
+
+Contrôles de parité de la phase 2 (scripts jetables, non conservés dans le dépôt) : environ 25 000 documents TOML (exemples mutés, cas limites) lus par
+`tomllib` et par le lecteur Go : mêmes acceptations, mêmes valeurs, aucun refus de Go sur un TOML pris en charge ; environ 16 000 configurations aléatoires passées à
+`parse_config` et à `config.Load` : mêmes acceptations, mêmes valeurs, mêmes messages d'erreur (hors texte de syntaxe d'expression, écart n° 7).
+
 ## 4. Inventaire des tests : Python → Go
 
 Un test Python = une ligne. Colonne « Go » : nom prévu (paquet, test ou sous-test) ; l'état passe à « fait » quand le test Go existe et passe.
@@ -48,12 +62,12 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestHelpers | `test_parse_duration` | 1 | internal/textutil : `TestParseDuration (+ TestFmtDuration)` | fait |
 | test_docker_update.py | TestHelpers | `test_split_ref` | 1 | internal/textutil : `TestSplitRef` | fait |
 | test_docker_update.py | TestHelpers | `test_windows` | 1 | internal/textutil : `TestWindows` | fait |
-| test_docker_update.py | TestConfig | `test_valid_and_defaults` | 2 | internal/config | à faire |
-| test_docker_update.py | TestConfig | `test_rejections` | 2 | internal/config | à faire |
-| test_docker_update.py | TestConfig | `test_duplicates_and_groups` | 2 | internal/config | à faire |
-| test_docker_update.py | TestConfig | `test_example_config_is_valid` | 2 | internal/config | à faire |
-| test_docker_update.py | TestConfig | `test_load_config_errors` | 2 | internal/config | à faire |
-| test_docker_update.py | TestConfig | `test_trusted_file` | 2 | internal/config | à faire |
+| test_docker_update.py | TestConfig | `test_valid_and_defaults` | 2 | internal/config : `TestValidAndDefaults` | fait |
+| test_docker_update.py | TestConfig | `test_rejections` | 2 | internal/config : `TestRejections (+ TestRemovedKeys, TestMessagesAreThoseOfThePython)` | fait |
+| test_docker_update.py | TestConfig | `test_duplicates_and_groups` | 2 | internal/config : `TestDuplicatesAndGroups` | fait |
+| test_docker_update.py | TestConfig | `test_example_config_is_valid` | 2 | internal/config : `TestExampleConfigIsValid` | fait |
+| test_docker_update.py | TestConfig | `test_load_config_errors` | 2 | internal/config : `TestLoadConfigErrors` | fait |
+| test_docker_update.py | TestConfig | `test_trusted_file` | 2 | internal/config : `TestTrustedFile` | fait |
 | test_docker_update.py | TestCycle | `test_up_to_date_does_nothing` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestCycle | `test_new_digest_is_deferred_then_applied` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestCycle | `test_order_of_operations` | 4 | internal/updater | à faire |
@@ -106,7 +120,7 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestVersions | `test_unreadable_never_guesses` | 1 | internal/textutil : `TestUnreadableNeverGuesses` | fait |
 | test_docker_update.py | TestVersions | `test_clean_text` | 1 | internal/textutil : `TestCleanText` | fait |
 | test_docker_update.py | TestVersions | `test_compact_advisory` | 1 | internal/textutil : `TestCompactAdvisory` | fait |
-| test_docker_update.py | TestVersions | `test_config_security_keys` | 2 | internal/config | à faire |
+| test_docker_update.py | TestVersions | `test_config_security_keys` | 2 | internal/config : `TestConfigSecurityKeys` | fait |
 | test_docker_update.py | TestSecurity | `test_fast_track_waits_security_cooldown_then_applies` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestSecurity | `test_clock_starts_at_the_latest_of_first_seen_and_publication` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestSecurity | `test_a_brand_new_advisory_is_not_instant` | 4 | internal/updater | à faire |
@@ -151,9 +165,9 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestReleaseScan | `test_hits_are_deduplicated_and_bounded` | 1 | internal/textutil : `TestHitsAreDeduplicatedAndBounded` | fait |
 | test_docker_update.py | TestReleaseScan | `test_only_the_head_of_a_huge_note_is_read` | 1 | internal/textutil : `TestOnlyTheHeadOfAHugeNoteIsRead` | fait |
 | test_docker_update.py | TestReleaseScan | `test_compact_release` | 1 | internal/textutil : `TestCompactRelease` | fait |
-| test_docker_update.py | TestReleaseScan | `test_config_release_keys` | 2 | internal/config | à faire |
-| test_docker_update.py | TestReleaseScan | `test_example_configs_are_valid` | 2 | internal/config | à faire |
-| test_docker_update.py | TestReleaseScan | `test_watchtower_migration_example` | 2 | internal/config | à faire |
+| test_docker_update.py | TestReleaseScan | `test_config_release_keys` | 2 | internal/config : `TestConfigReleaseKeys` | fait |
+| test_docker_update.py | TestReleaseScan | `test_example_configs_are_valid` | 2 | internal/config : `TestExampleConfigIsValid` | fait |
+| test_docker_update.py | TestReleaseScan | `test_watchtower_migration_example` | 2 | internal/config : `TestWatchtowerMigrationExample` | fait |
 | test_docker_update.py | TestReleaseNotes | `test_real_world_cases` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestReleaseNotes | `test_motifs_are_listed` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestReleaseNotes | `test_no_releases_means_no_alert_and_no_error` | 4 | internal/updater | à faire |
@@ -294,3 +308,14 @@ Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *ef
 - **Effet sur le comportement** : visible seulement pour une configuration déjà invalide en pratique (refus en plus, message identique).
 - **Risque** : quasi nul. **Effort** : petit.
 - **Recommandation** : faire. État actuel : déjà strict en Go dès la phase 1 (écart n° 2) ; le Python n'est pas corrigé.
+
+### Proposition 2 : refuser les tables et clés inconnues à la racine du fichier (défaut du Python)
+
+- **Quoi** : une table inconnue (`[setings]`) ou une clé racine n'est pas signalée ; seule `[settings]` est contrôlée.
+- **Pourquoi** : `parse_config` ne lit que `data["settings"]` et `data["service"]` (`docker-update.py:372`, `:411`). Une faute de frappe dans
+  l'en-tête `[settings]` fait ignorer tous les réglages (délai, webhook, fenêtre) sans un mot : l'outil tourne avec les valeurs par défaut.
+  Test Go qui montre le comportement actuel : `TestStructureErrors`.
+- **Effet sur le comportement** : visible : une configuration qui contient des tables ou clés inutiles est refusée (code 2) au lieu d'être acceptée.
+- **Risque** : faible (un fichier existant avec une table étrangère cesserait de valider). **Effort** : petit.
+- **Recommandation** : faire, après la bascule (c'est un changement de comportement).
+

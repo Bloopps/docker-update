@@ -35,6 +35,8 @@ jobs:
         run: go vet ./...
       - name: Tests (avec détecteur de concurrence)
         run: go test -race -count=1 ./...
+      - name: Fuzz court (lecteur TOML)
+        run: go test -run '^$' -fuzz FuzzParse -fuzztime 10s ./internal/tomlmini
       - name: Compilation statique (linux amd64 et arm64)
         run: |
           mkdir -p dist

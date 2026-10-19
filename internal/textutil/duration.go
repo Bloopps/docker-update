@@ -17,11 +17,17 @@ var (
 
 // ParseDuration lit une durée « 30m », « 6h », « 3d », « 1w » ou « 0 », en secondes.
 func ParseDuration(value string) (int64, error) {
+	return ParseDurationRepr(value, Repr(value))
+}
+
+// ParseDurationRepr est ParseDuration pour une valeur d'origine quelconque : repr est sa représentation Python,
+// reprise telle quelle dans le message d'erreur (ex. « 3 » pour l'entier 3, « '3' » pour la chaîne).
+func ParseDurationRepr(value, repr string) (int64, error) {
 	s := strings.TrimSpace(value)
 	if s == "0" {
 		return 0, nil
 	}
-	bad := fmt.Errorf("durée invalide : %s (exemples : 30m, 6h, 3d, 1w, 0)", Repr(value))
+	bad := fmt.Errorf("durée invalide : %s (exemples : 30m, 6h, 3d, 1w, 0)", repr)
 	m := durationRE.FindStringSubmatch(s)
 	if m == nil {
 		return 0, bad
@@ -56,13 +62,18 @@ type Window struct {
 
 // ParseWindow lit « 02:00-05:00 » ; une chaîne vide donne la fenêtre « toujours ».
 func ParseWindow(spec string) (Window, error) {
+	return ParseWindowRepr(spec, Repr(spec))
+}
+
+// ParseWindowRepr est ParseWindow pour une valeur d'origine quelconque (voir ParseDurationRepr).
+func ParseWindowRepr(spec, repr string) (Window, error) {
 	s := strings.TrimSpace(spec)
 	if s == "" {
 		return Window{}, nil
 	}
 	m := windowRE.FindStringSubmatch(s)
 	if m == nil {
-		return Window{}, fmt.Errorf("fenêtre invalide : %s (exemple : 02:00-05:00)", Repr(spec))
+		return Window{}, fmt.Errorf("fenêtre invalide : %s (exemple : 02:00-05:00)", repr)
 	}
 	var v [4]int
 	for i := range v {
@@ -70,11 +81,11 @@ func ParseWindow(spec string) (Window, error) {
 	}
 	h1, m1, h2, m2 := v[0], v[1], v[2], v[3]
 	if h1 > 23 || h2 > 23 || m1 > 59 || m2 > 59 {
-		return Window{}, fmt.Errorf("fenêtre invalide : %s", Repr(spec))
+		return Window{}, fmt.Errorf("fenêtre invalide : %s", repr)
 	}
 	a, b := h1*60+m1, h2*60+m2
 	if a == b {
-		return Window{}, fmt.Errorf("fenêtre vide : %s", Repr(spec))
+		return Window{}, fmt.Errorf("fenêtre vide : %s", repr)
 	}
 	return Window{Start: a, End: b, Set: true}, nil
 }
