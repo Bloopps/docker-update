@@ -23,6 +23,8 @@ docker-update list                # services suivis
 docker-update check               # observer, sans rien appliquer
 docker-update now NOM --yes       # appliquer tout de suite
 docker-update add NOM --container NOM     # suivre un conteneur de plus (rename, edit, delete existent aussi)
+sudo docker-update update         # se mettre à jour depuis la dernière release (SHA256SUMS vérifié ; --check : voir sans installer)
+sudo docker-update migrate        # si validate signale un ancien format de configuration ou d'unité systemd
 ```
 
 ## Aller plus loin

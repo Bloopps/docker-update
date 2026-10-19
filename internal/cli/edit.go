@@ -191,6 +191,14 @@ func writeLike(path string, data []byte, ref os.FileInfo) error {
 
 // checkResult relit un texte de configuration avec le même code que `validate` : erreur de lecture ou de validation.
 func checkResult(data []byte) (*config.Config, error) {
+	data, _, merr := config.Migrate(data)
+	if merr != nil {
+		var ce *config.Error
+		if errors.As(merr, &ce) {
+			return nil, errors.New(ce.Msg)
+		}
+		return nil, merr
+	}
 	doc, err := tomlmini.Parse(data)
 	if err != nil {
 		return nil, fmt.Errorf("configuration illisible : %w", err)

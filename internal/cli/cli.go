@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/Bloopps/docker-update/internal/dockerx"
 	"github.com/Bloopps/docker-update/internal/github"
 	"github.com/Bloopps/docker-update/internal/notify"
+	"github.com/Bloopps/docker-update/internal/selfupdate"
 	"github.com/Bloopps/docker-update/internal/state"
 	"github.com/Bloopps/docker-update/internal/updater"
 )
@@ -64,6 +66,10 @@ type Env struct {
 	GHGet github.GetFunc
 	// Now donne l'heure (nom des sauvegardes) ; défaut : time.Now.
 	Now func() time.Time
+	// UpdateDeps donne ce que `update` utilise (défaut : releases GitHub réelles, binaire en cours).
+	UpdateDeps func() selfupdate.Deps
+	// Tag est l'étiquette de release compilée dans le binaire (« v1.2.3 », ou « dev »).
+	Tag string
 	// NewEngine construit le cœur (défaut : updater.New).
 	in        *bufio.Reader
 	inSrc     io.Reader
@@ -152,6 +158,12 @@ func (e *Env) fill() {
 	if e.Now == nil {
 		e.Now = time.Now
 	}
+	if e.UpdateDeps == nil {
+		e.UpdateDeps = func() selfupdate.Deps {
+			return selfupdate.Deps{Fetch: selfupdate.HTTPFetch, Repo: "Bloopps/docker-update", APIBase: "https://api.github.com",
+				DownloadBase: "https://github.com", GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Current: e.Tag, Target: e.Binary}
+		}
+	}
 	if e.NewEngine == nil {
 		e.NewEngine = func(cfg *config.Config, run dockerx.Runner, n *notify.Notifier, st *state.State, log func(string), noSave bool) Engine {
 			return updater.New(updater.Deps{Cfg: cfg, Run: run, Notifier: n, State: st, Log: log, NoSave: noSave})
@@ -215,6 +227,9 @@ func Main(args []string, env *Env) int {
 }
 
 func execute(g globals, cmd string, sub subArgs, env *Env, log func(string)) (int, error) {
+	if cmd == "update" { // ne lit pas la configuration : elle peut être absente ou cassée
+		return updateCmd(env, g, sub, log)
+	}
 	if cmd == "init" { // la configuration n'existe pas encore : init la crée
 		return initCmd(env, g, sub, log)
 	}
@@ -229,7 +244,7 @@ func execute(g globals, cmd string, sub subArgs, env *Env, log func(string)) (in
 	}
 	switch cmd {
 	case "validate":
-		return validate(cfg, sub.flags["--online"], env, log), nil
+		return validate(cfg, g.config, sub.flags["--online"], env, log), nil
 	case "set-webhook":
 		return 0, setWebhook(cfg, g.dryRun, env, log)
 	case "list":
@@ -241,6 +256,8 @@ func execute(g globals, cmd string, sub subArgs, env *Env, log func(string)) (in
 		return 0, nil
 	case "add":
 		return addCmd(env, g, sub, cfg, log)
+	case "migrate":
+		return migrateCmd(env, g, sub, cfg, log)
 	case "edit":
 		return editCmd(env, g, sub, cfg, log)
 	case "export":
@@ -305,8 +322,11 @@ func lock(path string) (func(), error) {
 }
 
 // validate vérifie la configuration et les outils, sans rien toucher (--online : et que les dépôts GitHub existent).
-func validate(cfg *config.Config, online bool, env *Env, log func(string)) int {
+func validate(cfg *config.Config, cfgPath string, online bool, env *Env, log func(string)) int {
 	problems := 0
+	if len(cfg.Migrations) > 0 {
+		log("AVERTISSEMENT : la configuration est dans un ancien format (lue telle quelle) ; `docker-update migrate` la met à jour")
+	}
 	tools := []string{"docker"}
 	if cfg.Settings.RegistryTool == "regctl" {
 		tools = append(tools, "regctl")
@@ -316,6 +336,9 @@ func validate(cfg *config.Config, online bool, env *Env, log func(string)) int {
 			log(fmt.Sprintf("ERREUR : %s introuvable", t))
 			problems++
 		}
+	}
+	if old := outdatedUnits(env, cfgPath); len(old) > 0 {
+		log("AVERTISSEMENT : unité(s) systemd d'une version plus ancienne que celle de cet outil ; `docker-update migrate` les met à jour (aperçu et confirmation)")
 	}
 	units := map[string]bool{}
 	for _, s := range cfg.Services {

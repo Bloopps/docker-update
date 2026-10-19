@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/Bloopps/docker-update/deploy"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,10 +13,12 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Bloopps/docker-update/internal/config"
 	"github.com/Bloopps/docker-update/internal/dockerx"
 	"github.com/Bloopps/docker-update/internal/notify"
+	"github.com/Bloopps/docker-update/internal/selfupdate"
 	"github.com/Bloopps/docker-update/internal/state"
 	"github.com/Bloopps/docker-update/internal/tomlmini"
 )
@@ -239,7 +242,7 @@ func TestValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	var lines []string
-	rc := validate(cfg, false, &Env{}, func(m string) { lines = append(lines, m) })
+	rc := validate(cfg, "", false, &Env{}, func(m string) { lines = append(lines, m) })
 	text := strings.Join(lines, "\n")
 	if rc != 1 {
 		t.Errorf("code %d, attendu 1", rc)
@@ -395,3 +398,154 @@ func TestUnknownNameExitsWith1(t *testing.T) {
 		t.Errorf("sortie : %s", r.out.String())
 	}
 }
+
+func TestUpdateCommandNeedsNoConfigAndCheckChangesNothing(t *testing.T) {
+	var out, errOut strings.Builder
+	target := filepath.Join(t.TempDir(), "docker-update")
+	os.WriteFile(target, []byte("ancien"), 0o755)
+	fetched := 0
+	env := &Env{Stdout: &out, Stderr: &errOut, Tag: "v0.1.0", UpdateDeps: func() selfupdate.Deps {
+		return selfupdate.Deps{Repo: "o/r", APIBase: "https://api.test", DownloadBase: "https://dl.test", GOOS: "linux", GOARCH: "amd64", Current: "v0.1.0", Target: target,
+			Fetch: func(url string, limit int64) ([]byte, error) { fetched++; return []byte(`{"tag_name":"v0.2.0"}`), nil }}
+	}}
+	// configuration inexistante : `update` ne doit pas la lire
+	if code := Main([]string{"--config", filepath.Join(t.TempDir(), "absente.toml"), "update", "--check"}, env); code != 0 {
+		t.Fatalf("code %d : %s %s", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "v0.2.0") || fetched != 1 {
+		t.Fatalf("sortie %q, %d lectures", out.String(), fetched)
+	}
+	out.Reset()
+	if code := Main([]string{"--dry-run", "update"}, env); code != 0 || fetched != 2 {
+		t.Fatalf("--dry-run a téléchargé : code %d, %d lectures", code, fetched)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "ancien" {
+		t.Fatal("binaire modifié")
+	}
+	if code := Main([]string{"update", "--oups"}, env); code != 2 {
+		t.Fatalf("option inconnue : code %d", code)
+	}
+}
+
+func TestMigrateRewritesOldConfigWithBackupAndIsIdempotent(t *testing.T) {
+	r := newRig(t, "")
+	before, _ := os.ReadFile(r.cfg)
+	// validate prévient, sans rien écrire
+	r.run("validate")
+	if !strings.Contains(r.out.String(), "ancien format") {
+		t.Fatalf("pas d'avertissement : %s", r.out.String())
+	}
+	if after, _ := os.ReadFile(r.cfg); string(after) != string(before) {
+		t.Fatal("validate a modifié le fichier")
+	}
+	// --dry-run : aperçu seulement
+	r.out.Reset()
+	if code := r.run("--dry-run", "migrate", "--yes"); code != 0 {
+		t.Fatalf("code %d : %s", code, r.out.String())
+	}
+	if after, _ := os.ReadFile(r.cfg); string(after) != string(before) {
+		t.Fatal("--dry-run a écrit")
+	}
+	r.out.Reset()
+	if code := r.run("migrate", "--yes"); code != 0 {
+		t.Fatalf("code %d : %s %s", code, r.out.String(), r.errOut.String())
+	}
+	after, _ := os.ReadFile(r.cfg)
+	if !strings.Contains(string(after), "config_version = 1") {
+		t.Fatalf("version non posée :\n%s", after)
+	}
+	baks, _ := filepath.Glob(r.cfg + ".bak-*")
+	if len(baks) != 1 {
+		t.Fatalf("sauvegardes : %v", baks)
+	}
+	if b, _ := os.ReadFile(baks[0]); string(b) != string(before) {
+		t.Fatal("sauvegarde différente de l'original")
+	}
+	r.out.Reset()
+	if code := r.run("migrate", "--yes"); code != 0 || !strings.Contains(r.out.String(), "à jour") {
+		t.Fatalf("seconde passe : %d %s", code, r.out.String())
+	}
+	if again, _ := os.ReadFile(r.cfg); string(again) != string(after) {
+		t.Fatal("seconde passe a réécrit")
+	}
+}
+
+// unités systemd : pristine sans marqueur = à jour ; adaptée sans marqueur = proposée (avec aperçu, refus possible) ; marqueur courant = laissée
+func TestMigrateUnits(t *testing.T) {
+	r := newRig(t, "")
+	r.writeCfg("") // configuration déjà migrée plus bas
+	r.run("migrate", "--yes")
+	unitDir := t.TempDir()
+	r.env.UnitDir = unitDir
+	r.env.InstallBin = "/usr/local/sbin/docker-update"
+	svc := filepath.Join(unitDir, "docker-update.service")
+	pristine := strings.Replace(deploy.Service, "/etc/docker-update/updates.toml", r.cfg, 1)
+	pristineOld := strings.Join(strings.Split(pristine, "\n")[1:], "\n") // version d'avant le marqueur
+	os.WriteFile(svc, []byte(pristineOld), 0o644)
+
+	r.out.Reset()
+	r.run("migrate", "--yes")
+	if !strings.Contains(r.out.String(), "unités systemd à jour") {
+		t.Fatalf("une unité d'origine ne doit pas être proposée : %s", r.out.String())
+	}
+
+	custom := strings.Replace(pristineOld, "Nice=10", "Nice=5", 1)
+	os.WriteFile(svc, []byte(custom), 0o644)
+	r.out.Reset()
+	r.run("validate")
+	if !strings.Contains(r.out.String(), "unité(s) systemd") {
+		t.Fatalf("validate n'avertit pas : %s", r.out.String())
+	}
+	// refus : rien n'est touché
+	r.env.Stdin = strings.NewReader("n\n")
+	r.out.Reset()
+	r.run("migrate")
+	if b, _ := os.ReadFile(svc); string(b) != custom {
+		t.Fatal("unité modifiée malgré le refus")
+	}
+	if !strings.Contains(r.out.String(), "-Nice=5") && !strings.Contains(r.out.String(), "Nice=5") {
+		t.Fatalf("pas d'aperçu : %s", r.out.String())
+	}
+	// --dry-run : rien non plus
+	r.run("--dry-run", "migrate", "--yes")
+	if b, _ := os.ReadFile(svc); string(b) != custom {
+		t.Fatal("--dry-run a écrit")
+	}
+	// acceptation : sauvegarde, remplacement, daemon-reload demandé
+	var cmds []string
+	r.env.NewRunner = func(dry bool, log func(string)) dockerx.Runner { return &cmdRecorder{cmds: &cmds} }
+	r.out.Reset()
+	if code := r.run("migrate", "--yes"); code != 0 {
+		t.Fatalf("code %d : %s %s", code, r.out.String(), r.errOut.String())
+	}
+	b, _ := os.ReadFile(svc)
+	if !strings.Contains(string(b), "docker-update-unit-version: 1") || strings.Contains(string(b), "Nice=5") {
+		t.Fatalf("unité non remplacée :\n%s", b)
+	}
+	baks, _ := filepath.Glob(svc + ".bak-*")
+	if len(baks) != 1 {
+		t.Fatalf("sauvegardes : %v", baks)
+	}
+	if b, _ := os.ReadFile(baks[0]); string(b) != custom {
+		t.Fatal("sauvegarde différente de l'ancienne unité")
+	}
+	if len(cmds) != 1 || cmds[0] != "systemctl daemon-reload" {
+		t.Fatalf("commandes : %v", cmds)
+	}
+	// unité portant le marqueur courant : adaptée mais laissée
+	os.WriteFile(svc, []byte(strings.Replace(string(b), "Nice=10", "Nice=3", 1)), 0o644)
+	r.out.Reset()
+	r.run("migrate", "--yes")
+	if !strings.Contains(r.out.String(), "unités systemd à jour") {
+		t.Fatalf("unité adaptée à la version courante proposée : %s", r.out.String())
+	}
+}
+
+type cmdRecorder struct{ cmds *[]string }
+
+func (c *cmdRecorder) Run(argv []string, mutating bool, timeout time.Duration) dockerx.Result {
+	*c.cmds = append(*c.cmds, strings.Join(argv, " "))
+	return dockerx.Result{}
+}
+func (c *cmdRecorder) RunBytes([]string, time.Duration) (int, []byte, string) { return 0, nil, "" }
+func (c *cmdRecorder) DryRun() bool                                           { return false }

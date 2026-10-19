@@ -1,33 +1,68 @@
 name: Release
 on:
   push:
+    branches: [main]
     tags: ["v*"]
 
-# Seul ce workflow peut écrire dans le dépôt (release) ; il ne tourne que sur une étiquette v*.
+# Seul ce workflow peut écrire dans le dépôt (étiquette et release).
 permissions:
   contents: write
+
+# Une seule publication à la fois : deux fusions rapprochées ne calculent pas la même étiquette.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: actions/setup-go@v6
         with:
           go-version: "1.27.2"
           cache: false
+      - name: Étiquette de la release
+        id: tag
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            # Fusion sur main : étiquette suivante = dernier vX.Y.Z + 1 sur le correctif (v0.1.0 s'il n'y en a pas).
+            last="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)"
+            if [ -z "$last" ]; then tag="v0.1.0"; else
+              IFS=. read -r maj min pat <<< "${last#v}"
+              tag="v${maj}.${min}.$((pat + 1))"
+            fi
+            # Ce commit porte déjà une étiquette de version : rien à publier.
+            if git tag --points-at HEAD | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then tag=""; fi
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Étiquette : ${tag:-aucune (déjà étiquetée)}"
       - name: Tests
+        if: steps.tag.outputs.tag != ''
         run: go test -race -count=1 ./...
       - name: Compilation statique (linux amd64 et arm64)
+        if: steps.tag.outputs.tag != ''
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           mkdir -p dist
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
-              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -ldflags "-s -w -X main.version=${TAG}" \
               -o "dist/docker-update-linux-${arch}" ./cmd/docker-update
           done
           (cd dist && sha256sum docker-update-linux-* | tee SHA256SUMS)
       - name: Publication de la release
+        if: steps.tag.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --title "${GITHUB_REF_NAME}" --generate-notes
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          # Les notes : l'en-tête fixe (.github/release-header.md) puis la liste générée par GitHub, classée par .github/release.yml.
+          # --target crée l'étiquette sur ce commit quand elle n'existe pas encore (fusion sur main) ; sans effet sur une étiquette poussée.
+          gh release create "${TAG}" dist/* --title "${TAG}" --notes-file .github/release-header.md --generate-notes --target "${GITHUB_SHA}"
