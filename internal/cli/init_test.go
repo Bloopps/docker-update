@@ -414,7 +414,8 @@ func TestInitRefusesAnExistingFileUnlessForced(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(r.cfg), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	old := "[settings]\n# à garder en sauvegarde\n"
+	// les chemins sont dans le dossier du test : un « init » ne doit jamais toucher /var/lib ni /run pendant les tests
+	old := "[settings]\n# à garder en sauvegarde\nstate_file = \"" + r.paths.StateFile + "\"\nlock_file = \"" + r.paths.LockFile + "\"\n"
 	if err := os.WriteFile(r.cfg, []byte(old), 0o640); err != nil {
 		t.Fatal(err)
 	}
