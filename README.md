@@ -125,7 +125,7 @@ vôtre (ex. 9.0.1 alors que vous suivez 8.1) est signalée aussi. Une note qui n
 ## Tests et qualité
 
 ```sh
-python3 -m unittest discover -s tests -v      # 163 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
+python3 -m unittest discover -s tests -v      # 165 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
 ```
 
 Les tests de bout en bout lancent le **vrai programme** en sous-processus, avec un faux exécutable `docker` placé dans le
@@ -135,6 +135,9 @@ Un **test de mutation** manuel a introduit 38 défauts un par un (délai ignoré
 fenêtre ignorée, jeton journalisé, avis retiré pris en compte, plage illisible comptée comme corrigée…). Les 38 sont
 détectés ; il a aussi révélé trois angles morts des tests, comblés, et un vrai défaut de code (retour arrière de groupe).
 Il n'est pas rejoué par la CI.
+Un second test de mutation, sur la veille des notes de release, a introduit 33 défauts (accélération par une note, pré-version
+non ignorée, mot `security` seul pris pour fort, `@everyone` non neutralisé, doublon d'alerte…) : 32 détectés après
+correction de 5 angles morts des tests ; le dernier est équivalent (valeur par défaut jamais lue).
 
 ## Installation
 

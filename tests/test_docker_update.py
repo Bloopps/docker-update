@@ -1479,13 +1479,15 @@ class TestReleaseScan(unittest.TestCase):
     def test_near_misses_do_not_match(self):
         for text in ("CVE-2026-123", "CVE-26-12345", "GHSA-aaaa-bbbb-cccc-dddd", "GHSA-qxcr-4rv3", "GHSA-ILIL-1111-OOOO",
                      "securityfix", "insecurity fixes", "the security of fixes", "ARCEUS", "XSSX", "ssrfs", "preSQL injection",
-                     "sql  injected", "privileged escalation", "authbypass", "unauth_bypass", "path-traversals-of", "traversal path"):
+                     "xCVE-2026-12345", "CVE-2026-12345x", "sql  injected", "privileged escalation", "authbypass", "unauth_bypass", "path-traversals-of", "traversal path"):
             self.assertEqual(self.kinds(text), [], text)
 
     def test_security_alone_is_weak(self):
         self.assertEqual(self.kinds("Improve security of the login page", weak=True), ["security"])
         self.assertEqual(self.kinds("Improve security of the login page"), [])
-        self.assertEqual(self.kinds("insecurity, Securityx, x-security-y", weak=True), ["security"], "x-security-y : mot entier")
+        self.assertEqual(self.kinds("x-security-y", weak=True), ["security"], "tirets : frontière de mot")
+        for text in ("insecurity", "Securityx", "mysecurity", "security_level"):
+            self.assertEqual(self.kinds(text, weak=True), [], text)
         self.assertEqual(self.kinds("a security fix", weak=False), ["correctif de sécurité"])
 
     def test_hits_are_deduplicated_and_bounded(self):
@@ -1536,6 +1538,9 @@ class TestReleaseScan(unittest.TestCase):
         self.assertEqual((s.release_notes, s.release_notes_repos, s.release_notes_ignore),
                          (True, ["a/b"], ["npm audit", r"CVE-2025-\d+"]))
         self.assertTrue(du.parse_config({"service": [dict(one, release_notes=True, advisories=["a/b"])]}).services[0].release_notes)
+        for notbool in ("true", "false", "", 1, 0, None, ["x"]):      # un « false » en chaîne serait vrai : refusé
+            with self.assertRaises(du.ConfigError, msg=repr(notbool)):
+                du.parse_config({"service": [dict(one, release_notes=notbool, release_notes_repos=["a/b"])]})
         bad = [dict(one, release_notes="true"), dict(one, release_notes=1), dict(one, release_notes=True),
                dict(one, release_notes=True, release_notes_repos=["pas un depot"]),
                dict(one, release_notes=True, release_notes_repos="a/b"),
@@ -1834,6 +1839,24 @@ class TestReleaseNotes(Base):
         self.clock.days(2 / 24)
         u.cycle(apply=True)
         self.assertEqual(len(self.gh_calls), n + 1)
+
+    def test_first_ever_rate_limit_also_waits_the_interval(self):
+        self.gh_rel["traefik/traefik"] = (429, None, "")
+        u = self.mk()
+        u.cycle(apply=True)
+        u.cycle(apply=True)
+        self.assertEqual(len(self.gh_calls), 1, "limite de débit dès le premier appel : on n'insiste pas")
+        self.clock.days(2 / 24)
+        u.cycle(apply=True)
+        self.assertEqual(len(self.gh_calls), 2)
+        self.assertEqual(self.logtext().count("injoignable"), 1)
+
+    def test_same_tag_in_two_repositories_is_alerted_once(self):
+        self.gh_rel["a/one"] = (200, [release(self.clock, "v3.7.14", "CVE-2026-1111")], "e")
+        self.gh_rel["b/two"] = (200, [release(self.clock, "v3.7.14", "CVE-2026-1111")], "e")
+        self.mk(repos=("a/one", "b/two")).cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+        self.assertEqual(len(self.gh_calls), 2)
 
     def test_404_is_cached_for_the_poll_interval(self):
         self.gh_rel["traefik/traefik"] = (404, None, "")
