@@ -6,14 +6,14 @@ Principe
   - Une image n'est appliquée que si son digest est resté le même pendant `cooldown` (mesuré depuis
     la première fois que CE script l'a vu, pas depuis une date écrite dans l'image).
   - On tire exactement le digest évalué (jamais « le tag »), puis on recrée le service avec compose.
-  - Si le service ne repart pas : retour à l'image précédente (sauf `rollback = false`) et alerte.
+  - Si le service ne repart pas : alerte, aucun retour arrière automatique (l'image précédente est conservée).
 
 Fonctions
   - modes par service : auto (applique après le délai), notify (prévient seulement), manual (ignore) ;
   - groupes (plusieurs services d'une même image, mis à jour ensemble dans l'ordre du fichier) ;
   - fenêtre horaire (ex. 02:00-05:00) : on observe tout le temps, on n'applique que dans la fenêtre ;
   - test de fumée HTTP après la mise à jour ; nettoyage de l'image précédente une fois la mise à jour réussie ;
-  - retour arrière automatique ou désactivé par service ; pause (hold) ;
+  - pause (hold) ;
   - notifications Discord (ntfy ou JSON possibles), anti-spam des erreurs répétées ;
   - signal de vie (heartbeat) pour détecter un arrêt silencieux de l'outil ;
   - veille de sécurité : lit les avis de sécurité publiés par les dépôts GitHub des projets suivis ; si la
@@ -120,6 +120,12 @@ def in_window(w: tuple[int, int] | None, minutes: int) -> bool:
         return True
     a, b = w
     return a <= minutes < b if a < b else (minutes >= a or minutes < b)
+
+
+def short_id(image_id: str) -> str:
+    """« sha256:0123456789ab… » -> « 0123456789ab » (comme docker) ; autre forme : telle quelle, bornée."""
+    s = str(image_id or "")
+    return s[7:19] if s.startswith("sha256:") else clean_text(s, 40)
 
 
 def clean_text(value, limit: int = 200) -> str:
@@ -309,7 +315,6 @@ class Service:
     mode: str
     cooldown: int
     group: str
-    rollback: bool
     health_timeout: int
     window: tuple[int, int] | None = None
     smoke_url: str = ""
@@ -338,12 +343,21 @@ _SETTINGS_KEYS = {"state_file", "lock_file", "registry_tool", "notify_url_file",
                   "default_cooldown", "settle_seconds", "health_timeout", "window", "heartbeat_url_file",
                   "github_api", "github_token_file", "advisory_poll", "advisory_lookback", "version_label", "cleanup"}
 _SERVICE_KEYS = {"name", "compose_dir", "service", "compose_files", "mode", "cooldown", "group",
-                 "rollback", "health_timeout", "window", "smoke_url", "smoke_expect",
+                 "health_timeout", "window", "smoke_url", "smoke_expect",
                  "advisories", "min_severity", "security_cooldown", "security_policy", "cleanup",
                  "release_notes", "release_notes_repos", "release_notes_ignore"}
 
 
+_REMOVED_KEYS = {
+    "rollback": "en cas d'échec l'outil alerte et ne touche à rien : aucun retour arrière automatique",
+    "pre_hook": "la sauvegarde se gère en dehors de l'outil",
+}
+
+
 def _check_keys(where: str, data: dict, allowed: set[str]) -> None:
+    for key, why in _REMOVED_KEYS.items():
+        if key in data:
+            raise ConfigError(f"{where} : « {key} » n'existe plus ({why})")
     unknown = set(data) - allowed
     if unknown:
         raise ConfigError(f"{where} : clé(s) inconnue(s) {sorted(unknown)} (faute de frappe ?)")
@@ -464,7 +478,7 @@ def parse_config(data: dict) -> Config:
         services.append(Service(
             name=name, compose_dir=cdir, service=svc_name, compose_files=files, mode=mode,
             cooldown=parse_duration(s["cooldown"]) if "cooldown" in s else st.default_cooldown,
-            group=group, rollback=bool(s.get("rollback", True)), health_timeout=ht,
+            group=group, health_timeout=ht,
             window=parse_window(s["window"] if "window" in s else st.window),
             smoke_url=smoke_url, smoke_expect=list(smoke_expect), advisories=list(advisories),
             min_severity=min_sev, security_policy=policy, cleanup=cleanup, release_notes=rn,
@@ -476,9 +490,9 @@ def parse_config(data: dict) -> Config:
         if sv.group:
             groups.setdefault(sv.group, []).append(sv)
     for g, members in groups.items():
-        if len({(m.mode, m.cooldown, m.rollback, m.window, tuple(m.advisories), m.min_severity,
+        if len({(m.mode, m.cooldown, m.window, tuple(m.advisories), m.min_severity,
                  m.security_cooldown, m.security_policy, m.cleanup) for m in members}) > 1:
-            raise ConfigError(f"groupe {g} : mode, cooldown, rollback, window, cleanup et réglages de sécurité doivent être identiques")
+            raise ConfigError(f"groupe {g} : mode, cooldown, window, cleanup et réglages de sécurité doivent être identiques")
         if g in seen:
             raise ConfigError(f"groupe {g} : même nom qu'un service")
     return Config(st, services)
@@ -1189,36 +1203,27 @@ class Updater:
             if self.run.dry_run:
                 continue
             if r.rc == 0:
-                self.log(f"  nettoyage : image précédente de {ref} supprimée ({old[7:19] if old.startswith('sha256:') else old})")
+                self.log(f"  nettoyage : image précédente de {ref} supprimée ({short_id(old)})")
             else:
                 self.log(f"  nettoyage : image précédente de {ref} conservée ({clean_text(r.err, 120)})")
 
     def _fail(self, unit: str, todo: list[Eval], touched: list[Eval], old_ids: dict[str, str],
               targets: dict[str, tuple[str, str, str]]) -> bool:
+        """Échec : on prévient et on s'arrête. AUCUN retour arrière automatique (une base ou une application peut avoir
+        migré : défaire à l'aveugle est pire que laisser en l'état). L'image précédente reste sur le disque."""
         for ref, (_, digest, _) in targets.items():
             rec = self.state.get(ref) or {"digest": digest, "first_seen": int(self.now()), "notified": False}
             rec["failed"] = True
             self.state.put(ref, rec)
         failed = touched[-1].svc.name
-        if not all(e.svc.rollback for e in touched):
-            msg = (f"{unit}: {failed} ne repart pas avec la nouvelle image. RETOUR ARRIÈRE DÉSACTIVÉ pour ce service : "
-                   f"intervention manuelle nécessaire (image précédente conservée localement).")
-            self.log(msg)
-            self.notifier.send(f"ÉCHEC mise à jour : {unit}", msg, "error")
-            return False
-        self.log(f"{unit}: {failed} ne repart pas, retour à l'image précédente")
-        ok = True
-        for e in reversed(touched):
-            # chaque service retrouve SA propre image précédente, même au sein d'un groupe
-            self.run.run(["docker", "tag", e.old_image_id, e.ref], mutating=True)
-            ok = self._up(e.svc) and ok
-        if ok:
-            msg = f"{unit}: {failed} ne repartait pas avec la nouvelle image. Retour à la version précédente réussi."
-            self.notifier.send(f"Mise à jour annulée (retour arrière) : {unit}", msg, "warn")
-        else:
-            msg = f"{unit}: {failed} ne repart pas et le RETOUR ARRIÈRE A AUSSI ÉCHOUÉ. Service probablement arrêté."
-            self.notifier.send(f"URGENT : {unit} hors service", msg, "error")
+        before = ", ".join(f"{e.svc.name} ({short_id(e.old_image_id)})" for e in touched)
+        untouched = [e.svc.name for e in todo if e not in touched]
+        msg = (f"{unit}: {failed} ne repart pas avec la nouvelle image. Aucun retour arrière automatique : "
+               f"intervention manuelle. Images précédentes conservées : {before}. "
+               f"Pour revenir : `docker tag <image> <référence>` puis `docker compose up -d --no-deps <service>`."
+               + (f" Pas touchés : {', '.join(untouched)}." if untouched else ""))
         self.log(msg)
+        self.notifier.send(f"ÉCHEC mise à jour : {unit}", msg[:1500], "error")
         return False
 
     # -- cycles --------------------------------------------------------------

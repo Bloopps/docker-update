@@ -273,7 +273,6 @@ class TestConfig(unittest.TestCase):
         s = cfg.services[0]
         self.assertEqual(s.cooldown, 2 * DAY)
         self.assertEqual(s.mode, "notify")  # le plus prudent par défaut
-        self.assertTrue(s.rollback)
         self.assertEqual(s.compose_files, ["/x/c.yml", "/abs/o.yml"])
 
     def test_rejections(self):
@@ -285,7 +284,9 @@ class TestConfig(unittest.TestCase):
             (self.base(service="x;rm"), "invalide"),
             (self.base(typo=1), "inconnue"),
             (self.base(cooldown="3"), "durée"),
-            (self.base(pre_hook=[["/usr/local/sbin/avant"]]), "inconnue"),    # plus de crochet : la sauvegarde se gère ailleurs
+            (self.base(pre_hook=[["/usr/local/sbin/avant"]]), "n'existe plus"),   # la sauvegarde se gère ailleurs
+            (self.base(rollback=True), "n'existe plus"),                            # pas de retour arrière automatique
+            (self.base(rollback=False), "n'existe plus"),
             (self.base(window="nuit"), "fenêtre"),
             (self.base(smoke_url="ftp://x"), "http"),
             (self.base(smoke_url="https://x"), "smoke_expect"),
@@ -315,7 +316,7 @@ class TestConfig(unittest.TestCase):
         groups = {s.group for s in cfg.services if s.group}
         self.assertEqual(groups, {"tirelire"})
         tirelire = [s for s in cfg.services if s.group == "tirelire"]
-        self.assertFalse(any(s.rollback for s in tirelire), "pas de retour arrière auto sur une base migrée")
+        self.assertFalse(any(s.cleanup for s in tirelire), "on garde l'image précédente d'une base migrée")
         for s in cfg.services:
             self.assertIn(s.mode, ("auto", "notify"))
 
@@ -451,16 +452,18 @@ class TestFailures(Base):
         u = self.make([self.svc(**kw)], settings={"default_cooldown": "0"})
         return u
 
-    def test_failed_start_rolls_back(self):
+    def test_failed_start_alerts_and_never_rolls_back(self):
         u = self.go()
         self.world.fail_up.add("id-" + dg(2)[7:19])
         self.assertEqual(u.cycle(apply=True), 1)
-        c = self.world.containers[("/stack/traefik", "traefik")]
-        self.assertEqual(c["image_id"], "id-traefik-old", "retour à l'image précédente")
-        self.assertEqual(self.world.tags["traefik:v3.6"], "id-traefik-old")
+        self.assertEqual(len(self.world.ups), 1, "une seule tentative de démarrage : pas de second `up` pour revenir")
+        self.assertEqual(self.world.tags["traefik:v3.6"], "id-" + dg(2)[7:19], "l'étiquette n'est pas remise en arrière")
+        self.assertEqual(self.cmds(["docker", "tag"]), [["docker", "tag", "traefik@" + dg(2), "traefik:v3.6"]])
         self.assertTrue(u.state.images["traefik:v3.6"]["failed"])
         msg = " ".join(p[1]["content"] for p in self.posts)
-        self.assertIn("retour arrière", msg)
+        self.assertIn("ÉCHEC mise à jour", msg)
+        self.assertIn("Aucun retour arrière automatique", msg)
+        self.assertIn("id-traefik-old", msg, "l'image précédente est nommée pour un retour à la main")
 
     def test_failed_digest_is_not_retried_but_new_one_is(self):
         u = self.go()
@@ -474,24 +477,12 @@ class TestFailures(Base):
         u.cycle(apply=True)
         self.assertEqual(self.world.containers[("/stack/traefik", "traefik")]["image_id"], "id-" + dg(4)[7:19])
 
-    def test_rollback_disabled(self):
-        u = self.go(rollback=False)
-        self.world.fail_up.add("id-" + dg(2)[7:19])
-        self.assertEqual(u.cycle(apply=True), 1)
-        self.assertEqual(self.world.tags["traefik:v3.6"], "id-" + dg(2)[7:19], "aucun retour arrière automatique")
-        self.assertIn("DÉSACTIVÉ", " ".join(p[1]["content"] for p in self.posts))
-
-    def test_rollback_itself_fails(self):
-        u = self.go()
-        self.world.fail_up.update({"id-" + dg(2)[7:19], "id-traefik-old"})
-        self.assertEqual(u.cycle(apply=True), 1)
-        self.assertIn("URGENT", " ".join(p[1]["content"] for p in self.posts))
-
     def test_restarting_after_up_counts_as_failure(self):
         u = self.go()
         self.world.restarting.add("id-" + dg(2)[7:19])  # up réussit mais le conteneur boucle
         self.assertEqual(u.cycle(apply=True), 1)
-        self.assertEqual(self.world.containers[("/stack/traefik", "traefik")]["image_id"], "id-traefik-old")
+        self.assertEqual(len(self.world.ups), 1, "pas de second démarrage pour « revenir »")
+        self.assertEqual(self.world.containers[("/stack/traefik", "traefik")]["image_id"], "id-" + dg(2)[7:19])
 
     def test_pull_failure_aborts_before_any_change(self):
         u = self.go()
@@ -525,7 +516,9 @@ class TestFailures(Base):
         u = self.make([self.svc(smoke_url=url, smoke_expect=[302, 401])], settings={"default_cooldown": "0"})
         self.http_codes[url] = 0  # le site ne répond pas après la mise à jour
         self.assertEqual(u.cycle(apply=True), 1)
-        self.assertEqual(self.world.containers[("/stack/traefik", "traefik")]["image_id"], "id-traefik-old")
+        self.assertEqual(self.world.containers[("/stack/traefik", "traefik")]["image_id"], "id-" + dg(2)[7:19],
+                         "test de fumée en échec : alerte, aucun retour arrière")
+        self.assertEqual(len(self.world.ups), 1)
         self.assertIn("test de fumée", self.logtext())
         self.assertGreaterEqual(self.sleeps.count(5), 2, "trois essais espacés")
 
@@ -669,7 +662,7 @@ class TestGroups(Base):
         for s in ("migrate", "web", "admin")[:n]:
             self.world.add(s, "/stack/tirelire", s, "ghcr.io/org/tirelire:main", 1)
         self.world.registry["ghcr.io/org/tirelire:main"] = manifest(2)
-        return [self.svc(s, "/stack/tirelire", s, group="tirelire", rollback=True)
+        return [self.svc(s, "/stack/tirelire", s, group="tirelire")
                 for s in ("migrate", "web", "admin")[:n]]
 
     def test_group_updates_in_order_with_single_pull(self):
@@ -679,10 +672,8 @@ class TestGroups(Base):
         self.assertEqual(len(self.cmds(["docker", "pull"])), 1)
         self.assertEqual(len(self.posts), 1, "un seul message pour tout le groupe")
 
-    def test_group_rolls_back_everything_touched_in_reverse(self):
+    def test_group_failure_stops_there_and_leaves_everything_as_is(self):
         u = self.make(self.stack(), settings={"default_cooldown": "0"})
-        self.world.fail_up.add("id-" + dg(2)[7:19])
-        self.world.fail_up.discard("id-" + dg(2)[7:19])
         # échec seulement sur admin (3e) : on le simule via une image « qui boucle » appliquée à admin uniquement
         orig = self.world.run
 
@@ -695,21 +686,22 @@ class TestGroups(Base):
 
         u.run = type("R", (), {"run": staticmethod(run), "run_bytes": staticmethod(self.world.run_bytes), "dry_run": False})()
         self.assertEqual(u.cycle(apply=True), 1)
-        for s in ("migrate", "web", "admin"):
-            self.assertEqual(self.world.containers[("/stack/tirelire", s)]["image_id"], "id-" + s + "-old", s)
-        order = [s for s, _ in self.world.ups]
-        self.assertEqual(order[:3], ["migrate", "web", "admin"])
-        self.assertEqual(order[3:], ["admin", "web", "migrate"], "retour arrière en ordre inverse")
+        for s in ("migrate", "web"):
+            self.assertEqual(self.world.containers[("/stack/tirelire", s)]["image_id"], "id-" + dg(2)[7:19], f"{s} reste mis à jour")
+        self.assertEqual([s for s, _ in self.world.ups], ["migrate", "web", "admin"], "aucun redémarrage en sens inverse")
+        msg = " ".join(p[1]["content"] for p in self.posts)
+        self.assertIn("admin ne repart pas", msg)
+        self.assertIn("migrate (id-migrate-old)", msg)
+        self.assertNotIn("Pas touchés", msg, "tout le groupe avait été touché")
 
-    def test_group_without_rollback_leaves_state_and_alerts(self):
-        stack = self.stack()
-        for s in stack:
-            s["rollback"] = False
-        u = self.make(stack, settings={"default_cooldown": "0"})
+    def test_group_stops_at_the_first_failure_and_names_the_untouched(self):
+        u = self.make(self.stack(), settings={"default_cooldown": "0"})
         self.world.fail_up.add("id-" + dg(2)[7:19])
         self.assertEqual(u.cycle(apply=True), 1)
         self.assertEqual([s for s, _ in self.world.ups], ["migrate"], "on s'arrête au premier échec")
-        self.assertIn("DÉSACTIVÉ", " ".join(p[1]["content"] for p in self.posts))
+        msg = " ".join(p[1]["content"] for p in self.posts)
+        self.assertIn("Aucun retour arrière automatique", msg)
+        self.assertIn("Pas touchés : web, admin", msg)
 
     def test_shared_ref_keeps_timer_when_only_one_member_is_up_to_date(self):
         stack = self.stack(2)
@@ -1557,7 +1549,7 @@ class TestReleaseScan(unittest.TestCase):
         self.assertNotIn("watchtower", by)
         tirelire = [s for s in cfg.services if s.group == "tirelire"]
         self.assertEqual(len(tirelire), 5)
-        self.assertFalse(any(s.rollback for s in tirelire))
+        self.assertFalse(any(s.cleanup for s in tirelire), "on garde l'image précédente d'une base migrée")
         self.assertEqual({s.name for s in cfg.services if s.group == "immich"}, {"immich_server", "immich_machine_learning"})
         self.assertFalse(any(s.release_notes for s in tirelire), "tirelire : dépôt privé, pas de version")
         self.assertEqual(sum(1 for s in cfg.services if s.group == "immich" and s.release_notes), 1, "une alerte par release")
@@ -2010,7 +2002,7 @@ class TestCleanup(Base):
         u = self.go()
         self.world.fail_up.add("id-" + dg(2)[7:19])
         self.assertEqual(u.cycle(apply=True), 1)
-        self.assertEqual(self.world.removed, [], "l'image précédente sert au retour arrière")
+        self.assertEqual(self.world.removed, [], "l'image précédente reste le moyen de revenir à la main")
         self.assertEqual(self.cmds(["docker", "image", "rm"]), [])
 
     def test_nothing_is_removed_without_an_update(self):

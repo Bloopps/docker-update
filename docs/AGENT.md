@@ -27,7 +27,7 @@ Condition d'arrêt générale : tout comportement qui ressemble à un danger pou
 | `examples/updates.example.toml` | configuration d'exemple (placeholders à remplacer) |
 | `examples/updates.watchtower.toml` | les applications suivies par Watchtower, toutes en `notify` (placeholders à remplacer) |
 | `deploy/docker-update.service`, `.timer` | unités `systemd` (le service démarre en mode **`check`**, qui n'applique rien) |
-| `tests/` | 182 tests (`python3 -m unittest discover -s tests`) |
+| `tests/` | 180 tests (`python3 -m unittest discover -s tests`) |
 
 Lis d'abord `README.md` (fonctionnement, sous-commandes, modèle de menace, limites connues).
 
@@ -44,7 +44,7 @@ Teste l'outil lui-même sans rien installer, depuis le dépôt cloné :
 ```sh
 python3 -m unittest discover -s tests 2>&1 | tail -5
 ```
-**Attendu : « OK », 182 tests.** Les tests ne créent que des fichiers temporaires et un serveur HTTP local sur `127.0.0.1`.
+**Attendu : « OK », 180 tests.** Les tests ne créent que des fichiers temporaires et un serveur HTTP local sur `127.0.0.1`.
 Si un test échoue, ne continue pas : donne la sortie.
 
 Vérifie que la lecture du digest distant fonctionne **depuis ce serveur** (c'est la commande exacte que l'outil utilise) :
@@ -81,12 +81,12 @@ Produis `updates.toml` à partir de `examples/updates.example.toml` en remplaça
 | --- | --- | --- |
 | traefik, pocket-id, crowdsec | `auto` | délai 3 j, fenêtre 02:00-05:00, `advisories`, test de fumée |
 | homepage, beszel, goaccess | `auto` | délai 3 j, `window = ""` |
-| tirelire (migrate, egress, web, admin, sync) | `auto`, **groupe** `tirelire` | délai 1 j, `rollback = false` (la sauvegarde de la base se gère ailleurs) |
+| tirelire (migrate, egress, web, admin, sync) | `auto`, **groupe** `tirelire` | délai 1 j, `cleanup = false` (la sauvegarde de la base se gère ailleurs) |
 | immich, portainer, wg-easy, portabase | `notify` | l'outil prévient, l'utilisateur applique avec `now` |
 | watchtower, socket-proxy, la base `tirelire-db` | **ne pas les mettre** | |
 
 Dans le groupe, l'ordre du fichier est l'ordre de mise à jour : `migrate` d'abord. Les services d'un groupe doivent avoir le même
-mode, délai, `rollback`, fenêtre et réglages de sécurité (l'outil le vérifie).
+mode, délai, `cleanup`, fenêtre et réglages de sécurité (l'outil le vérifie).
 
 **Rends la configuration à l'utilisateur pour validation avant de continuer.**
 
@@ -155,9 +155,9 @@ sudo env DOCKER_CONFIG=/var/lib/docker-update/docker /usr/local/sbin/docker-upda
 
 Rends compte avec la sortie (sans secret).
 
-## 6. Étape 5 — Essai sur un service factice, y compris un vrai retour arrière (accord requis)
+## 6. Étape 5 — Essai sur un service factice, y compris un vrai échec (accord requis)
 
-Cet essai exerce la mise à jour **et le retour arrière** sans toucher un seul service réel.
+Cet essai exerce la mise à jour, le nettoyage **et un échec réel** (alerte, sans retour arrière) sans toucher un seul service réel.
 
 1. Vérifie qu'aucune image locale `alpine:3.20` n'existe (`docker image ls alpine`). Sinon, choisis une autre petite image publique et dis-le.
 2. Crée `/var/tmp/du-test/compose.yml` :
@@ -174,11 +174,12 @@ Cet essai exerce la mise à jour **et le retour arrière** sans toucher un seul 
 4. Configuration d'essai `/etc/docker-update/test.toml` (propriétaire root) : état et verrou séparés (`/var/lib/docker-update/test-state.json`,
    `/run/docker-update/test-lock`), `notify_url_file` vide, un service `dummy` (`compose_dir = "/var/tmp/du-test"`, `mode = "auto"`, `cooldown = "0"`, `window = ""`).
 5. **Essai A : mise à jour réussie.** `docker-update --config …/test.toml check` → « nouvelle image … prête ». Puis
-   `docker-update --config …/test.toml now dummy --yes`. **Attendu :** le conteneur `dummy` tourne maintenant sur l'image `alpine` réelle (l'ID d'image a changé).
-6. **Essai B : retour arrière réel.** Refais l'étape 3 (nouvelle image « périmée »). Ajoute au service `dummy` de `test.toml` :
+   `docker-update --config …/test.toml now dummy --yes`. **Attendu :** le conteneur `dummy` tourne maintenant sur l'image `alpine` réelle (l'ID d'image a changé), et le journal dit « nettoyage : image précédente … supprimée ».
+6. **Essai B : échec réel, sans retour arrière.** Refais l'étape 3 (nouvelle image « périmée »). Ajoute au service `dummy` de `test.toml` :
    `smoke_url = "http://127.0.0.1:9/"` et `smoke_expect = [200]` (ce port ne répond pas : le test de fumée échoue forcément).
    `docker-update --config …/test.toml now dummy --yes`. **Attendu :** code de sortie 1, journal « test de fumée en échec »,
-   puis conteneur **revenu** sur l'image précédente, et `status` montre l'image marquée en échec.
+   le message « Aucun retour arrière automatique » qui nomme l'image précédente, le conteneur **resté** sur la nouvelle image
+   (l'outil ne touche plus à rien), aucun nettoyage, et `status` montre l'image marquée en échec.
 7. **Nettoyage obligatoire :** `cd /var/tmp/du-test && docker compose down`, `rm -rf /var/tmp/du-test`, `docker rmi alpine:3.20`,
    supprime `test.toml`, l'état et le verrou d'essai. Confirme avec `docker ps -a` et `docker images`.
 

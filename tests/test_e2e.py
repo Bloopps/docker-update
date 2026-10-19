@@ -112,7 +112,7 @@ cooldown = "{cooldown}"
         self.write_world(remote=3, fail_up=["id-" + dig(3)[7:19]])
         r = self.du("run")
         self.assertEqual(r.returncode, 1)
-        self.assertNotIn("removed", self.world(), "échec + retour arrière : rien n'est supprimé")
+        self.assertNotIn("removed", self.world(), "échec : rien n'est supprimé")
 
     def test_cleanup_can_be_turned_off(self):
         self.write_cfg("0", "cleanup = false")
@@ -120,12 +120,14 @@ cooldown = "{cooldown}"
         self.assertEqual(self.image(), "id-" + dig(2)[7:19])
         self.assertNotIn("removed", self.world())
 
-    def test_failure_rolls_back_and_exits_1(self):
+    def test_failure_alerts_without_rollback_and_exits_1(self):
         self.write_world(remote=2, fail_up=["id-" + dig(2)[7:19]])
         r = self.du("run")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertEqual(self.image(), "id-old")
-        self.assertEqual(self.world()["tags"]["traefik:v3.6"], "id-old")
+        self.assertIn("Aucun retour arrière automatique", r.stdout)
+        ups = [c for c in self.world()["log"] if c[:1] == ["compose"] and "up" in c]
+        self.assertEqual(len(ups), 1, "un seul `up` : pas de second pour revenir en arrière")
+        self.assertEqual(self.world()["tags"]["traefik:v3.6"], "id-" + dig(2)[7:19], "l'étiquette n'est pas remise en arrière")
         r = self.du("run")                                    # pas de nouvelle tentative sur le même digest
         self.assertIn("déjà tentée", r.stdout)
         self.assertEqual(r.returncode, 0)

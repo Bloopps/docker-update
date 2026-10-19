@@ -18,12 +18,14 @@ Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
   de sécurité. Jamais d'accélération : voir ci-dessous.
 - **Application exacte.** Il tire le digest évalué (pas « l'étiquette », qui a pu bouger), retague localement, puis
   recrée le service avec `docker compose up -d --no-deps --pull never --wait`.
-- **Retour arrière.** Si le service ne repart pas (sonde de santé, état après démarrage, test de fumée HTTP), retour à
-  l'image précédente de chaque service, et alerte. Désactivable par service (`rollback = false`) quand une base a migré.
+- **Pas de retour arrière automatique.** Si le service ne repart pas (sonde de santé, état après démarrage, test de
+  fumée HTTP), l'outil **alerte et s'arrête** : une base ou une application a pu migrer, remettre l'ancienne image à
+  l'aveugle est pire. L'alerte nomme l'image précédente, qui reste sur le disque, et la commande pour y revenir à la
+  main. Le digest en échec n'est pas retenté ; un digest plus récent l'est. Les clés `rollback` et `pre_hook` sont refusées.
 - **Nettoyage.** Une fois la mise à jour **réussie**, l'image précédente est supprimée (`docker image rm`, comme le
   nettoyage de Watchtower). Jamais forcé : docker refuse si un conteneur utilise encore l'image ou si elle porte un
-  autre nom, et ce n'est alors qu'une ligne de journal. Rien n'est supprimé après un échec (l'image précédente sert au
-  retour arrière). Réglage `cleanup` (défaut `true`), global ou par service.
+  autre nom, et ce n'est alors qu'une ligne de journal. Rien n'est supprimé après un échec (l'image précédente reste
+  disponible pour revenir à la main). Réglage `cleanup` (défaut `true`), global ou par service.
 - **Fenêtre horaire** (`02:00-05:00`) : on observe tout le temps, on n'applique que dans la fenêtre. Un avis *critique* l'ignore.
 - **Groupes** : plusieurs services d'une même image mis à jour ensemble, dans l'ordre du fichier.
 - **Modes par service** : `auto` (applique), `notify` (prévient, vous appliquez), `manual` (ignore).
@@ -56,7 +58,7 @@ l'outil **refuse de démarrer** sinon.
 `github_api`, `github_token_file`, `advisory_poll`, `advisory_lookback`, `version_label`, `cleanup`.
 
 **`[[service]]`** : `name`, `compose_dir`, `service` (obligatoires) ; `compose_files`, `mode` (défaut `notify`, le plus
-prudent), `cooldown`, `group`, `rollback` (défaut `true`), `health_timeout`, `window`, `cleanup`, `smoke_url` +
+prudent), `cooldown`, `group`, `health_timeout`, `window`, `cleanup`, `smoke_url` +
 `smoke_expect`, `advisories`, `min_severity` (défaut `high`), `security_cooldown` (défaut `6h`), `security_policy`
 (`fast` ou `alert`), `release_notes` (défaut `false`), `release_notes_repos`, `release_notes_ignore`. Les fautes de
 frappe dans les clés sont refusées.
@@ -120,7 +122,8 @@ vôtre (ex. 9.0.1 alors que vous suivez 8.1) est signalée aussi. Une note qui n
 - **Jamais testé contre un vrai démon Docker** (aucun n'était disponible pendant le développement). Les commandes ont été
   vérifiées avec Docker 29.8.2 / Compose 5.6.0 (options, format de `config --format json`, lecture du manifeste brut sur un
   registre public), le reste avec un faux `docker`. La première exécution réelle doit être `check`, puis un service factice.
-- Un retour arrière **ne défait pas** les migrations de base de données : d'où `rollback = false` pour la tirelire.
+- Pas de retour arrière automatique : après un échec, le service reste dans l'état où il est (éventuellement arrêté ou
+  en boucle) jusqu'à votre intervention. Surveillez les alertes « ÉCHEC mise à jour ».
 - Le digest comparé est celui de l'index de l'étiquette ; si `check` annonce « nouvelle image » pour **tous** les services
   dès la première fois, c'est que la comparaison ne correspond pas à votre moteur : s'arrêter (voir `docs/AGENT.md`).
 - Le nettoyage ne supprime que l'image remplacée. Une image téléchargée seulement pour lire sa version (veille de
@@ -131,7 +134,7 @@ vôtre (ex. 9.0.1 alors que vous suivez 8.1) est signalée aussi. Une note qui n
 ## Tests et qualité
 
 ```sh
-python3 -m unittest discover -s tests -v      # 182 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
+python3 -m unittest discover -s tests -v      # 180 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
 ```
 
 Les tests de bout en bout lancent le **vrai programme** en sous-processus, avec un faux exécutable `docker` placé dans le

@@ -89,9 +89,9 @@ mode = "auto"
 window = ""
 
 # ── La tirelire : un groupe (même image), dans l'ordre migrate -> egress -> web -> admin -> sync ──
-# rollback = false : les migrations de la base ne se défont pas. En cas d'échec, l'outil prévient et NE
-# revient PAS en arrière tout seul. L'outil ne sauvegarde rien : la sauvegarde de la base se gère ailleurs.
-# cleanup = false : on garde l'image précédente (seul moyen de revenir en arrière à la main après une migration).
+# En cas d'échec l'outil prévient et ne revient JAMAIS en arrière tout seul (les migrations de la base ne se défont
+# pas). Il ne sauvegarde rien : la sauvegarde de la base se gère ailleurs.
+# cleanup = false : on garde l'image précédente (le moyen de revenir en arrière À LA MAIN après une migration).
 [[service]]
 name          = "tirelire-migrate"
 group         = "tirelire"
@@ -101,7 +101,6 @@ service       = "migrate"
 mode          = "auto"
 cooldown      = "1d"
 window        = ""
-rollback      = false
 cleanup       = false
 
 [[service]]
@@ -113,7 +112,6 @@ service = "egress"
 mode = "auto"
 cooldown = "1d"
 window = ""
-rollback = false
 cleanup       = false
 
 [[service]]
@@ -125,7 +123,6 @@ service = "web"
 mode = "auto"
 cooldown = "1d"
 window = ""
-rollback = false
 cleanup       = false
 smoke_url = "https://tirelire.EXEMPLE.fr/"
 smoke_expect = [302, 401, 403]
@@ -139,7 +136,6 @@ service = "admin"
 mode = "auto"
 cooldown = "1d"
 window = ""
-rollback = false
 cleanup       = false
 
 [[service]]
@@ -151,7 +147,6 @@ service = "sync"
 mode = "auto"
 cooldown = "1d"
 window = ""
-rollback = false
 cleanup       = false
 
 # ── Services « classe root » ou à changements fréquents : l'outil PRÉVIENT, on met à jour à la main ──
