@@ -24,8 +24,6 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-# La sauvegarde avant mise à jour de la tirelire écrit ici (le « - » tolère l'absence du dossier).
-ReadWritePaths=-/home/ubuntu/tirelire/backups
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

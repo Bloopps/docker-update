@@ -23,28 +23,28 @@ Condition d'arrêt générale : tout comportement qui ressemble à un danger pou
 
 | Fichier | Rôle |
 | --- | --- |
-| `docker-update.py` | l'outil (Python ≥ 3.11, bibliothèque standard) |
+| `cmd/docker-update`, `internal/` | l'outil (Go, bibliothèque standard seulement) : un binaire statique |
 | `examples/updates.example.toml` | configuration d'exemple (placeholders à remplacer) |
+| `examples/updates.watchtower.toml` | les applications suivies par Watchtower, toutes en `notify` (placeholders à remplacer) |
 | `deploy/docker-update.service`, `.timer` | unités `systemd` (le service démarre en mode **`check`**, qui n'applique rien) |
-| `deploy/tirelire-predump.sh` | sauvegarde de la base avant une mise à jour de la tirelire (crochet) |
-| `tests/` | 114 tests (`python3 -m unittest discover -s tests`) |
+| `e2e/`, `testdata/fakedocker/` | tests de bout en bout : le vrai binaire avec un faux `docker` |
 
-Lis d'abord `README.md` (fonctionnement, sous-commandes, modèle de menace, limites connues).
+Lis d'abord `README.md` (vue d'ensemble) puis `docs/REFERENCE.md` (fonctionnement, sous-commandes, modèle de menace, limites connues).
 
 ## 2. Étape 1 — Pré-vérifications (lecture seule)
 
 ```sh
-python3 --version                                   # >= 3.11 requis (tomllib)
+uname -m                                            # x86_64 (amd64) ou aarch64 (arm64) : le binaire existe pour les deux
 docker --version ; docker compose version ; docker buildx version
 docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}'
 ```
 
-Teste l'outil lui-même sans rien installer, depuis le dépôt cloné :
+Teste l'outil lui-même sans rien installer, depuis le dépôt cloné (Go 1.27 ou plus récent) :
 
 ```sh
-python3 -m unittest discover -s tests 2>&1 | tail -5
+go test -count=1 ./... 2>&1 | tail -15
 ```
-**Attendu : « OK », 114 tests.** Les tests ne créent que des fichiers temporaires et un serveur HTTP local sur `127.0.0.1`.
+**Attendu : « ok » pour chaque paquet, aucun « FAIL ».** Les tests ne créent que des fichiers temporaires et des serveurs HTTP locaux sur `127.0.0.1` ; ils n'appellent jamais le vrai Docker.
 Si un test échoue, ne continue pas : donne la sortie.
 
 Vérifie que la lecture du digest distant fonctionne **depuis ce serveur** (c'est la commande exacte que l'outil utilise) :
@@ -68,52 +68,50 @@ done
 Pour chaque service retenu, **contrôle que l'outil retrouvera bien le même conteneur** :
 
 ```sh
-cd <dossier> && docker compose -f <fichiers…> config --format json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("name"))'
+cd <dossier> && docker compose -f <fichiers…> config --format json | jq -r .name
 ```
-Le nom affiché **doit être identique** à la valeur `projet=` du conteneur. S'il diffère, l'outil ne retrouvera pas le conteneur
+(`jq` doit être installé.) Le nom affiché **doit être identique** à la valeur `projet=` du conteneur. S'il diffère, l'outil ne retrouvera pas le conteneur
 (il l'ignorera, sans rien créer) : note-le et ne mets pas ce service en `auto`. **N'affiche jamais** la sortie complète de
 `config` : elle contient les variables d'environnement.
 
-Produis `updates.toml` à partir de `examples/updates.example.toml` en remplaçant TOUS les placeholders (`/home/ubuntu/...`,
+Le plus simple : `docker-update init` (voir README, « Installation ») fait ce relevé, les contrôles ci-dessus et pose les questions ;
+il écrit `updates.toml` sans toucher à un conteneur. Relis son aperçu avec l'utilisateur. À la main, sinon : produis `updates.toml` à partir de `examples/updates.example.toml` en remplaçant TOUS les placeholders (`/home/ubuntu/...`,
 `EXEMPLE.fr`, noms de services). Règles de répartition à respecter :
 
 | Service | Mode | Remarques |
 | --- | --- | --- |
 | traefik, pocket-id, crowdsec | `auto` | délai 3 j, fenêtre 02:00-05:00, `advisories`, test de fumée |
 | homepage, beszel, goaccess | `auto` | délai 3 j, `window = ""` |
-| tirelire (migrate, egress, web, admin, sync) | `auto`, **groupe** `tirelire` | délai 1 j, `rollback = false`, crochet `pre_hook` **sur un seul service** (le premier) |
+| tirelire (migrate, egress, web, admin, sync) | `auto`, **groupe** `tirelire` | délai 1 j, `cleanup = false` (la sauvegarde de la base se gère ailleurs) |
 | immich, portainer, wg-easy, portabase | `notify` | l'outil prévient, l'utilisateur applique avec `now` |
 | watchtower, socket-proxy, la base `tirelire-db` | **ne pas les mettre** | |
 
 Dans le groupe, l'ordre du fichier est l'ordre de mise à jour : `migrate` d'abord. Les services d'un groupe doivent avoir le même
-mode, délai, `rollback`, fenêtre et réglages de sécurité (l'outil le vérifie).
+mode, délai, `cleanup`, fenêtre et réglages de sécurité (l'outil le vérifie).
 
 **Rends la configuration à l'utilisateur pour validation avant de continuer.**
 
 ## 4. Étape 3 — Installation (accord requis ; modifie le système)
 
-Demande l'accord, puis :
+Demande l'accord, puis le plus simple est de laisser l'outil tout installer (binaire dans `/usr/local/sbin`, dossiers, unités systemd,
+minuteur) : `sudo ./docker-update init` (voir README, « Installation »). Il demande confirmation avant chaque modification et n'applique aucune
+mise à jour. Les commandes équivalentes à la main, si `init` ne convient pas (`init --no-install` pour ne faire que la configuration) :
 
 ```sh
 sudo install -d -m 755 -o root -g root /etc/docker-update
-sudo install -m 755 -o root -g root docker-update.py /usr/local/sbin/docker-update
-sudo install -m 750 -o root -g root deploy/tirelire-predump.sh /usr/local/sbin/tirelire-predump.sh
-sudo install -m 644 -o root -g root updates.toml /etc/docker-update/updates.toml        # la configuration validée
+sudo install -m 755 -o root -g root docker-update /usr/local/sbin/docker-update
+sudo install -m 644 -o root -g root updates.toml /etc/docker-update/updates.toml
 sudo install -m 644 -o root -g root deploy/docker-update.service deploy/docker-update.timer /etc/systemd/system/
-```
-
-Le dossier d'état et le dossier des identifiants du registre :
-
-```sh
 sudo install -d -m 700 -o root -g root /var/lib/docker-update /var/lib/docker-update/docker
 ```
 
-Webhook Discord : l'utilisateur te donne l'URL. Écris-la dans un fichier `600` **sans l'afficher** :
+Webhook Discord : **c'est l'utilisateur qui saisit l'URL, dans son propre terminal** ; tu ne la vois jamais. Demande-lui de lancer
+(la saisie est masquée ; l'outil valide l'adresse, écrit le fichier en `600` et n'affiche rien) :
 
 ```sh
-sudo install -m 600 -o root -g root /dev/null /etc/docker-update/discord_webhook
-# puis le contenu : une seule ligne, l'URL (via sudoedit ou `read -rs` ; jamais dans l'historique du shell ni dans un message)
+sudo /usr/local/sbin/docker-update --config /etc/docker-update/updates.toml set-webhook
 ```
+L'URL n'est jamais un argument de ligne de commande (historique du shell, `ps`). Pour la changer plus tard, relancer la même commande.
 
 Identifiants du registre : **seulement si** l'image de la tirelire sur GHCR est privée. Demande à l'utilisateur de créer un jeton
 **nouveau**, avec la seule permission `read:packages`, jamais le jeton déjà utilisé par Watchtower :
@@ -148,13 +146,17 @@ sudo env DOCKER_CONFIG=/var/lib/docker-update/docker /usr/local/sbin/docker-upda
    pas l'étiquette de version : la veille de sécurité ne pourra rien conclure pour ce service. Note-le ; ne l'invente pas.
 4. **Les tests de fumée sont « OK »** (`HTTP 302/401/403` selon la configuration). Un code inattendu veut dire que `smoke_expect`
    est mal calibré pour ce site **ou** que le serveur n'atteint pas son propre nom DNS (hairpin) : adapte-le, ne le désactive pas en silence.
-5. Aucun message Discord n'a été envoyé (`check` n'envoie rien) et aucun service n'a redémarré (`docker ps`).
+5. **Chaque service avec `release_notes = true` affiche « notes de release … version détectée X ».** Si une ligne dit « version NON
+   détectée », l'image n'a pas d'étiquette de version lisible (`latest`, `main`, absente) : la veille des notes ne pourra rien
+   comparer (une seule alerte « impossible de comparer »). Note-le ; ne devine pas la version. Les lignes « ALERTE notes de
+   release » de `check` sont informatives (rien n'est envoyé) : rapporte-les à l'utilisateur.
+6. Aucun message Discord n'a été envoyé (`check` n'envoie rien) et aucun service n'a redémarré (`docker ps`).
 
 Rends compte avec la sortie (sans secret).
 
-## 6. Étape 5 — Essai sur un service factice, y compris un vrai retour arrière (accord requis)
+## 6. Étape 5 — Essai sur un service factice, y compris un vrai échec (accord requis)
 
-Cet essai exerce la mise à jour **et le retour arrière** sans toucher un seul service réel.
+Cet essai exerce la mise à jour, le nettoyage **et un échec réel** (alerte, sans retour arrière) sans toucher un seul service réel.
 
 1. Vérifie qu'aucune image locale `alpine:3.20` n'existe (`docker image ls alpine`). Sinon, choisis une autre petite image publique et dis-le.
 2. Crée `/var/tmp/du-test/compose.yml` :
@@ -171,11 +173,12 @@ Cet essai exerce la mise à jour **et le retour arrière** sans toucher un seul 
 4. Configuration d'essai `/etc/docker-update/test.toml` (propriétaire root) : état et verrou séparés (`/var/lib/docker-update/test-state.json`,
    `/run/docker-update/test-lock`), `notify_url_file` vide, un service `dummy` (`compose_dir = "/var/tmp/du-test"`, `mode = "auto"`, `cooldown = "0"`, `window = ""`).
 5. **Essai A : mise à jour réussie.** `docker-update --config …/test.toml check` → « nouvelle image … prête ». Puis
-   `docker-update --config …/test.toml now dummy --yes`. **Attendu :** le conteneur `dummy` tourne maintenant sur l'image `alpine` réelle (l'ID d'image a changé).
-6. **Essai B : retour arrière réel.** Refais l'étape 3 (nouvelle image « périmée »). Ajoute au service `dummy` de `test.toml` :
+   `docker-update --config …/test.toml now dummy --yes`. **Attendu :** le conteneur `dummy` tourne maintenant sur l'image `alpine` réelle (l'ID d'image a changé), et le journal dit « nettoyage : image précédente … supprimée ».
+6. **Essai B : échec réel, sans retour arrière.** Refais l'étape 3 (nouvelle image « périmée »). Ajoute au service `dummy` de `test.toml` :
    `smoke_url = "http://127.0.0.1:9/"` et `smoke_expect = [200]` (ce port ne répond pas : le test de fumée échoue forcément).
    `docker-update --config …/test.toml now dummy --yes`. **Attendu :** code de sortie 1, journal « test de fumée en échec »,
-   puis conteneur **revenu** sur l'image précédente, et `status` montre l'image marquée en échec.
+   le message « Aucun retour arrière automatique » qui nomme l'image précédente, le conteneur **resté** sur la nouvelle image
+   (l'outil ne touche plus à rien), aucun nettoyage, et `status` montre l'image marquée en échec.
 7. **Nettoyage obligatoire :** `cd /var/tmp/du-test && docker compose down`, `rm -rf /var/tmp/du-test`, `docker rmi alpine:3.20`,
    supprime `test.toml`, l'état et le verrou d'essai. Confirme avec `docker ps -a` et `docker images`.
 
@@ -211,6 +214,8 @@ un tag de version (`:1.2`) ; dans ce cas mets `cooldown = "0"` pour le groupe, l
 
 ```sh
 sudo docker-update --config /etc/docker-update/updates.toml status               # ce qui attend, depuis quand
+sudo docker-update --config /etc/docker-update/updates.toml check traefik immich # scan manuel d'une sélection (rien n'est appliqué) ; sans nom : tout
+sudo docker-update --config /etc/docker-update/updates.toml check --notify       # idem, et le tableau d'état part sur Discord
 sudo docker-update --config /etc/docker-update/updates.toml now traefik --yes    # voie rapide : applique tout de suite
 sudo docker-update --config /etc/docker-update/updates.toml hold traefik         # met en pause (aucune mise à jour automatique)
 sudo docker-update --config /etc/docker-update/updates.toml unhold traefik
@@ -218,9 +223,18 @@ sudo docker-update --config /etc/docker-update/updates.toml --dry-run run       
 ```
 Conseil : un alias `du='sudo env DOCKER_CONFIG=/var/lib/docker-update/docker docker-update --config /etc/docker-update/updates.toml'`.
 
-**Quand Discord annonce « Correctif de sécurité détecté »** : rien à faire, l'outil applique après `security_cooldown` (6 h) ; si c'est
-critique, la fenêtre horaire est ignorée. **Quand Discord annonce « VULNÉRABLE »** : aucune image corrigée n'est encore publiée ; surveiller.
-**Quand Discord annonce « plage de versions illisible » ou « version … pas lisible »** : l'outil n'a pas pu conclure, à l'utilisateur de juger,
+**Le rapport Discord.** Un passage qui a quelque chose à dire envoie UN seul message, sections par importance : 🚨 échecs de mise
+à jour, ⚠️ sécurité (avis), 📝 notes de release, ⚠️ erreurs de vérification, ✅ mises à jour réussies, 📦 nouvelles versions prêtes
+(tableau service / image / depuis quand), ℹ️ infos. Rien de nouveau : aucun message. Un tableau ou une liste trop long est coupé
+avec « … N élément(s) non affiché(s) » (le détail est dans `journalctl -u docker-update`).
+
+**Quand le rapport contient « Correctif de sécurité détecté »** : rien à faire, l'outil applique après `security_cooldown` (6 h) ; si c'est
+critique, la fenêtre horaire est ignorée. **Quand il contient « VULNÉRABLE »** : aucune image corrigée n'est encore publiée ; surveiller.
+**Quand il contient « Notes de release à lire »** : une release plus récente que la version en cours mentionne un motif de
+sécurité (CVE, GHSA, « security fix »…). C'est une alerte seulement : rien n'est accéléré. L'utilisateur lit la note (lien dans le
+message) et décide, puis `now <service> --yes`. Un message « mot *security* » (info) est un signal faible, sans CVE annoncé.
+**Quand il contient « Impossible de comparer »** : la version en cours n'est pas lisible, aucune note n'est analysée pour ce service.
+**Quand il contient « plage de versions illisible » ou « version … pas lisible »** : l'outil n'a pas pu conclure, à l'utilisateur de juger,
 puis `now <service> --yes` s'il décide d'appliquer.
 
 ## 10. Retour arrière de tout le dispositif

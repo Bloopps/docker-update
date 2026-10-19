@@ -1,0 +1,29 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - unconvert
+    - bodyclose
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - os.Remove
+        - os.RemoveAll
+        - io.Copy
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*encoding/json.Encoder).Encode
+        - (net.Conn).Close
+    staticcheck:
+      checks: ["all", "-QF1001", "-QF1002", "-ST1000", "-ST1003", "-ST1005", "-ST1016", "-ST1020", "-ST1021", "-ST1022"]
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck]
+formatters:
+  enable:
+    - gofmt

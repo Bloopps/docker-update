@@ -1,0 +1,221 @@
+# Migration depuis Watchtower : les applications qu'il suivait, en mode `notify` pour tout le monde.
+# (copie à adapter vers /etc/docker-update/updates.toml ; voir docs/AGENT.md, étapes 2 à 4)
+#
+# TOUS LES CHEMINS (`compose_dir`) ET LES NOMS DE SERVICES COMPOSE SONT DES PLACEHOLDERS, relevés d'après les noms de
+# conteneurs de Watchtower : l'agent doit les vérifier en lecture seule (AGENT.md, étape 2 : `com.docker.compose.*`).
+#
+# Aucun service n'est en `auto`. Passer un service en `auto` demande l'accord explicite de l'utilisateur.
+# Watchtower lui-même n'est PAS déclaré ici : il est arrêté (jamais supprimé) à la bascule, retiré en fin de migration.
+# portabase-pg (postgres:17-alpine) n'est pas déclaré non plus : aucun avis GitHub, hors du périmètre release_notes ;
+# ajoutez-le en `notify` si vous voulez être prévenu des nouvelles images.
+#
+# Veille des notes de release (`release_notes = true`) : alertes seulement, voir README. Elle exige que l'image porte
+# l'étiquette `org.opencontainers.image.version`. Les services marqués « version illisible » ci-dessous n'ont pas de
+# version lisible (pas d'étiquette, étiquette `latest` ou incohérente) : `release_notes` reste commenté tant que la
+# lecture de leur version n'est pas réglée, sinon l'outil n'enverrait qu'une alerte « impossible de comparer ».
+
+[settings]
+state_file         = "/var/lib/docker-update/state.json"
+lock_file          = "/run/docker-update/lock"
+registry_tool      = "buildx"
+notify_url_file    = "/etc/docker-update/discord_webhook"   # root:root 600, UNE ligne : l'URL du webhook
+notify_format      = "discord"
+default_cooldown   = "3d"
+window             = ""
+cleanup            = true                              # supprime l'image précédente après une mise à jour RÉUSSIE (jamais forcé)
+settle_seconds     = 20
+health_timeout     = 180
+advisory_poll      = "1h"
+advisory_lookback  = "30d"
+# github_token_file = "/etc/docker-update/github_token"   # optionnel : jeton SANS aucun droit (relève la limite de débit)
+
+# ── La tirelire : un groupe de 5 services (même image), dépôt privé : pas d'avis ni de notes lisibles ──
+# Pas de version (étiquette `main`) : aucune veille de release. La base migre (sauvegarde gérée ailleurs) ; cleanup = false : on garde l'image précédente pour revenir à la main.
+[[service]]
+name          = "tirelire-migrate"
+group         = "tirelire"
+compose_dir   = "/home/ubuntu/tirelire"
+service       = "migrate"
+mode          = "notify"
+cooldown      = "1d"
+cleanup       = false
+
+[[service]]
+name = "tirelire-egress"
+group = "tirelire"
+compose_dir = "/home/ubuntu/tirelire"
+service = "egress"
+mode = "notify"
+cooldown = "1d"
+cleanup       = false
+
+[[service]]
+name = "tirelire-web"
+group = "tirelire"
+compose_dir = "/home/ubuntu/tirelire"
+service = "web"
+mode = "notify"
+cooldown = "1d"
+cleanup       = false
+
+[[service]]
+name = "tirelire-admin"
+group = "tirelire"
+compose_dir = "/home/ubuntu/tirelire"
+service = "admin"
+mode = "notify"
+cooldown = "1d"
+cleanup       = false
+
+[[service]]
+name = "tirelire-sync"
+group = "tirelire"
+compose_dir = "/home/ubuntu/tirelire"
+service = "sync"
+mode = "notify"
+cooldown = "1d"
+cleanup       = false
+
+# ── CrowdSec et son interface ──
+[[service]]
+name         = "crowdsec"                      # crowdsecurity/crowdsec:v1.8.1 (étiquette épinglée)
+advisories   = ["crowdsecurity/crowdsec"]
+release_notes = true
+compose_dir  = "/home/ubuntu/crowdsec"
+service      = "crowdsec"
+mode         = "notify"
+
+[[service]]
+name         = "crowdsec-web-ui"               # ghcr.io/theduffman85/crowdsec-web-ui:latest — version illisible (étiquette « latest »)
+compose_dir  = "/home/ubuntu/crowdsec"
+service      = "crowdsec-web-ui"
+mode         = "notify"
+# release_notes       = true
+# release_notes_repos = ["TheDuffman85/crowdsec-web-ui"]
+
+# ── Portabase ──
+[[service]]
+name         = "portabase-app"                 # portabase/portabase:latest — pas d'étiquette de version : version illisible
+compose_dir  = "/home/ubuntu/portabase"
+service      = "portabase-app"
+mode         = "notify"
+# release_notes       = true
+# release_notes_repos = ["Portabase/portabase"]
+
+[[service]]
+name         = "portabase-agent"               # portabase/agent:latest — étiquette incohérente : version illisible
+compose_dir  = "/home/ubuntu/portabase"
+service      = "portabase-agent"
+mode         = "notify"
+# release_notes       = true
+# release_notes_repos = ["Portabase/agent"]
+
+# ── Homepage ──
+[[service]]
+name         = "homepage"                      # ghcr.io/gethomepage/homepage:latest
+advisories   = ["gethomepage/homepage"]
+release_notes = true
+compose_dir  = "/home/ubuntu/homepage"
+service      = "homepage"
+mode         = "notify"
+
+# ── Immich : le serveur et l'apprentissage automatique se mettent à jour ensemble ──
+# Mêmes réglages de sécurité dans le groupe (l'outil le vérifie) ; `release_notes` sur UN seul membre : une alerte par release.
+[[service]]
+name         = "immich_server"                 # ghcr.io/immich-app/immich-server:v3
+group        = "immich"
+advisories   = ["immich-app/immich"]
+release_notes = true
+compose_dir  = "/home/ubuntu/immich"
+service      = "immich-server"
+mode         = "notify"
+
+[[service]]
+name         = "immich_machine_learning"       # ghcr.io/immich-app/immich-machine-learning:v3
+group        = "immich"
+advisories   = ["immich-app/immich"]
+compose_dir  = "/home/ubuntu/immich"
+service      = "immich-machine-learning"
+mode         = "notify"
+
+[[service]]
+name         = "immich_postgres"               # ghcr.io/immich-app/postgres:18-vectorchord0.5.3 — pas de releases exploitables
+compose_dir  = "/home/ubuntu/immich"
+service      = "database"
+mode         = "notify"
+
+[[service]]
+name         = "immich_redis"                  # valkey/valkey:8 — pas d'étiquette de version : version illisible
+compose_dir  = "/home/ubuntu/immich"
+service      = "redis"
+mode         = "notify"
+# release_notes       = true
+# release_notes_repos = ["valkey-io/valkey"]
+
+# ── Traefik ──
+[[service]]
+name         = "traefik"                       # traefik:latest
+advisories   = ["traefik/traefik"]
+release_notes = true
+compose_dir  = "/home/ubuntu/traefik"
+service      = "traefik"
+mode         = "notify"
+
+# ── GoAccess ──
+[[service]]
+name         = "goaccess"                      # xavierh/goaccess-for-nginxproxymanager:latest — pas d'étiquette : version illisible
+compose_dir  = "/home/ubuntu/goaccess"
+service      = "goaccess"
+mode         = "notify"
+# release_notes       = true
+# release_notes_repos = ["xavier-hernandez/goaccess-for-nginxproxymanager"]
+
+# ── Beszel : le hub et l'agent ont la même version ; `release_notes` sur le hub seulement ──
+[[service]]
+name         = "beszel"                        # henrygd/beszel
+release_notes = true
+release_notes_repos = ["henrygd/beszel"]
+compose_dir  = "/home/ubuntu/beszel"
+service      = "beszel"
+mode         = "notify"
+
+[[service]]
+name         = "beszel-agent"                  # henrygd/beszel-agent
+compose_dir  = "/home/ubuntu/beszel"
+service      = "beszel-agent"
+mode         = "notify"
+
+# ── WireGuard, Portainer, Pocket ID ──
+[[service]]
+name         = "wg-easy"                       # ghcr.io/wg-easy/wg-easy:15
+advisories   = ["wg-easy/wg-easy"]
+release_notes = true
+compose_dir  = "/home/ubuntu/wg-easy"
+service      = "wg-easy"
+mode         = "notify"
+
+[[service]]
+name         = "portainer"                     # portainer/portainer-ce:latest — pas d'étiquette de version : version illisible
+advisories   = ["portainer/portainer"]
+compose_dir  = "/home/ubuntu/portainer"
+service      = "portainer"
+mode         = "notify"
+# release_notes = true
+
+[[service]]
+name         = "pocket-id"                     # ghcr.io/pocket-id/pocket-id:v2-distroless
+advisories   = ["pocket-id/pocket-id"]
+release_notes = true
+compose_dir  = "/home/ubuntu/pocket-id"
+service      = "pocket-id"
+mode         = "notify"
+
+# ── API Node : les notes de nodejs/node sont énormes et pleines de CVE de dépendances ──
+[[service]]
+name         = "self-api"                      # node:24-alpine — pas d'étiquette de version : version illisible
+compose_dir  = "/home/ubuntu/self-api"
+service      = "self-api"
+mode         = "notify"
+# release_notes        = true
+# release_notes_repos  = ["nodejs/node"]
+# release_notes_ignore = ["openssl", "npm audit", "undici"]    # à ajuster : écarte le bruit des dépendances

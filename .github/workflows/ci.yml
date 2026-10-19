@@ -8,13 +8,50 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  go:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - name: Version de Python
-        run: python3 --version
-      - name: Tests (logique, faux monde Docker, bout en bout)
-        run: python3 -W error::ResourceWarning -m unittest discover -s tests -v
-      - name: Syntaxe du crochet de sauvegarde
-        run: bash -n deploy/tirelire-predump.sh
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.27.2"
+          cache: false
+      - name: Version de Go
+        run: go version
+      - name: Format (gofmt)
+        run: |
+          fichiers="$(gofmt -l .)"
+          if [ -n "$fichiers" ]; then echo "Fichiers mal formatés :"; echo "$fichiers"; exit 1; fi
+      - name: Analyse statique (go vet)
+        run: go vet ./...
+      - name: Tests (unitaires et bout en bout, avec détecteur de concurrence)
+        run: go test -race -count=1 ./...
+      - name: Fuzz court (lecteur TOML)
+        run: go test -run '^$' -fuzz FuzzParse -fuzztime 10s ./internal/tomlmini
+      - name: Compilation statique (linux amd64 et arm64)
+        run: |
+          mkdir -p dist
+          version="$(git describe --tags --always --dirty)"
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${version}" \
+              -o "dist/docker-update-linux-${arch}" ./cmd/docker-update
+          done
+          (cd dist && sha256sum docker-update-linux-* | tee SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-update-linux
+          path: dist/
+          if-no-files-found: error
+
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.27.2"
+          cache: false
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest

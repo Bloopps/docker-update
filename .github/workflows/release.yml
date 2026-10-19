@@ -1,0 +1,33 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+# Seul ce workflow peut écrire dans le dépôt (release) ; il ne tourne que sur une étiquette v*.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.27.2"
+          cache: false
+      - name: Tests
+        run: go test -race -count=1 ./...
+      - name: Compilation statique (linux amd64 et arm64)
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "dist/docker-update-linux-${arch}" ./cmd/docker-update
+          done
+          (cd dist && sha256sum docker-update-linux-* | tee SHA256SUMS)
+      - name: Publication de la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --title "${GITHUB_REF_NAME}" --generate-notes

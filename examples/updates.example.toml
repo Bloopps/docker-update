@@ -1,6 +1,6 @@
 # /etc/docker-update/updates.toml — propriétaire root:root, mode 644 (ou 600).
 # Le script refuse de démarrer si ce fichier appartient à un autre compte ou est modifiable par d'autres :
-# il contient des commandes (pre_hook) exécutées en root.
+# il désigne les piles compose que l'outil pilote en root.
 #
 # TOUS LES CHEMINS ET NOMS DE SERVICES CI-DESSOUS SONT DES PLACEHOLDERS : l'agent doit les remplacer par
 # les valeurs réelles, relevées en lecture seule (voir AGENT.md, étape 2).
@@ -9,11 +9,11 @@
 state_file        = "/var/lib/docker-update/state.json"
 lock_file         = "/run/docker-update/lock"
 registry_tool     = "buildx"                         # buildx (manifeste brut) ou regctl (requête HEAD)
-notify_url_file   = "/etc/docker-update/discord_webhook"   # root:root 600, UNE ligne : l'URL du webhook
+notify_url_file   = "/etc/docker-update/discord_webhook"   # root:root 600 ; à remplir avec `docker-update set-webhook` (saisie masquée)
 notify_format     = "discord"
-heartbeat_url_file = "/etc/docker-update/heartbeat_url"    # optionnel (ex. URL « push » d'Uptime Kuma) ; supprimer si inutilisé
 default_cooldown  = "3d"                             # une image doit rester identique ce temps avant d'être appliquée
 window            = "02:00-05:00"                    # on n'applique que la nuit ; "" = à toute heure
+cleanup           = true                             # supprime l'image précédente après une mise à jour RÉUSSIE (jamais forcé) ; par service aussi
 settle_seconds    = 20                               # attente après démarrage avant de juger l'état
 health_timeout    = 180                              # secondes d'attente de la sonde de santé
 
@@ -28,9 +28,18 @@ advisory_lookback = "30d"                            # on ignore les avis plus a
 # que l'image candidate (version lue dans ses étiquettes) n'est plus touchée, le délai de 3 jours est ramené à
 # security_cooldown (défaut 6 h, compté depuis la plus tardive de la 1re observation et de la publication de l'avis).
 # Un avis « critical » ignore aussi la fenêtre horaire. Tout cas ambigu = alerte Discord seulement.
+#
+# Veille des NOTES DE RELEASE (`release_notes = true`, désactivée par défaut) : beaucoup de projets corrigent des failles
+# sans publier d'avis. L'outil lit les 30 dernières releases du dépôt (`release_notes_repos`, à défaut `advisories`),
+# ne garde que celles plus récentes que la version en cours, et cherche des motifs stricts (CVE-…, GHSA-…, « security fix »,
+# RCE, XSS, path traversal…). ALERTE SEULEMENT : une note de release est un texte non fiable, elle n'accélère jamais rien.
+# Le mot « security » seul est un signal faible (alerte d'information groupée). `release_notes_ignore` : expressions
+# régulières (insensibles à la casse) qui écartent les extraits bruyants, ex. ["npm audit", "dependabot"].
+# La version en cours est lue dans l'étiquette d'image `version_label` ; sinon : une seule alerte « impossible de comparer ».
 [[service]]
 name         = "traefik"
 advisories   = ["traefik/traefik"]
+release_notes = true
 compose_dir  = "/home/ubuntu/traefik"
 service      = "traefik"
 mode         = "auto"
@@ -40,6 +49,8 @@ smoke_expect = [302, 401, 403]
 [[service]]
 name         = "pocket-id"
 advisories   = ["pocket-id/pocket-id"]
+release_notes = true
+release_notes_ignore = ["dependabot", "bump .* from"]   # exemple : écarte le bruit des mises à jour de dépendances
 compose_dir  = "/home/ubuntu/pocket-id"
 service      = "pocket-id"
 mode         = "auto"
@@ -77,9 +88,9 @@ mode = "auto"
 window = ""
 
 # ── La tirelire : un groupe (même image), dans l'ordre migrate -> egress -> web -> admin -> sync ──
-# rollback = false : les migrations de la base ne se défont pas. En cas d'échec, l'outil prévient et NE
-# revient PAS en arrière tout seul (une sauvegarde est faite avant, par le crochet ci-dessous).
-# Le crochet est déclaré UNE SEULE FOIS, sur le premier service du groupe.
+# En cas d'échec l'outil prévient et ne revient JAMAIS en arrière tout seul (les migrations de la base ne se défont
+# pas). Il ne sauvegarde rien : la sauvegarde de la base se gère ailleurs.
+# cleanup = false : on garde l'image précédente (le moyen de revenir en arrière À LA MAIN après une migration).
 [[service]]
 name          = "tirelire-migrate"
 group         = "tirelire"
@@ -89,8 +100,7 @@ service       = "migrate"
 mode          = "auto"
 cooldown      = "1d"
 window        = ""
-rollback      = false
-pre_hook      = [["/usr/local/sbin/tirelire-predump.sh"]]
+cleanup       = false
 
 [[service]]
 name = "tirelire-egress"
@@ -101,7 +111,7 @@ service = "egress"
 mode = "auto"
 cooldown = "1d"
 window = ""
-rollback = false
+cleanup       = false
 
 [[service]]
 name = "tirelire-web"
@@ -112,7 +122,7 @@ service = "web"
 mode = "auto"
 cooldown = "1d"
 window = ""
-rollback = false
+cleanup       = false
 smoke_url = "https://tirelire.EXEMPLE.fr/"
 smoke_expect = [302, 401, 403]
 
@@ -125,7 +135,7 @@ service = "admin"
 mode = "auto"
 cooldown = "1d"
 window = ""
-rollback = false
+cleanup       = false
 
 [[service]]
 name = "tirelire-sync"
@@ -136,7 +146,7 @@ service = "sync"
 mode = "auto"
 cooldown = "1d"
 window = ""
-rollback = false
+cleanup       = false
 
 # ── Services « classe root » ou à changements fréquents : l'outil PRÉVIENT, on met à jour à la main ──
 # `docker-update now <nom> --yes` quand vous avez lu les notes de version.
