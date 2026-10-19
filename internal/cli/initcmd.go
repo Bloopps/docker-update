@@ -218,7 +218,7 @@ func initCmd(env *Env, g globals, sub subArgs, log func(string)) (int, error) {
 	}
 	if _, err := env.Load(g.config); err != nil {
 		os.Remove(g.config)
-		return 0, fmt.Errorf("le fichier écrit est invalide, il a été retiré : %v", err)
+		return 0, fmt.Errorf("le fichier écrit est invalide, il a été retiré : %w", err)
 	}
 	log("écrit : " + g.config)
 	return finishInit(env, g, p, yes, chosen, log)

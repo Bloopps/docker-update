@@ -172,7 +172,7 @@ func tryConfig(settings M, services []M) (*config.Config, error) {
 	}
 	doc, err := tomlmini.Parse([]byte(sb.String()))
 	if err != nil {
-		return nil, fmt.Errorf("TOML de test invalide : %v\n%s", err, sb.String())
+		return nil, fmt.Errorf("TOML de test invalide : %w\n%s", err, sb.String())
 	}
 	return config.Parse(doc)
 }

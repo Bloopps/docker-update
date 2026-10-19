@@ -132,7 +132,7 @@ func copyExecutable(from, to string) error {
 func runInstall(run dockerx.Runner, steps []installStep, reload bool, log func(string)) error {
 	for _, s := range steps {
 		if err := s.do(); err != nil {
-			return fmt.Errorf("%s : %v", s.what, err)
+			return fmt.Errorf("%s : %w", s.what, err)
 		}
 		log("✓ " + s.what)
 	}
