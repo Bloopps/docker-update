@@ -26,6 +26,9 @@ Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
   nettoyage de Watchtower). Jamais forcé : docker refuse si un conteneur utilise encore l'image ou si elle porte un
   autre nom, et ce n'est alors qu'une ligne de journal. Rien n'est supprimé après un échec (l'image précédente reste
   disponible pour revenir à la main). Réglage `cleanup` (défaut `true`), global ou par service.
+- **Conteneurs arrêtés laissés tels quels.** Un service dont le conteneur est arrêté (`exited`, `created`, `paused`, `dead`…)
+  n'est touché en rien : ni registre, ni mise à jour, ni démarrage, ni veille de sécurité, ni nettoyage, ni compteur de
+  délai. Seuls `running` et `restarting` sont suivis. Démarrez-le vous-même ; il est repris au passage suivant.
 - **Fenêtre horaire** (`02:00-05:00`) : on observe tout le temps, on n'applique que dans la fenêtre. Un avis *critique* l'ignore.
 - **Groupes** : plusieurs services d'une même image mis à jour ensemble, dans l'ordre du fichier.
 - **Modes par service** : `auto` (applique), `notify` (prévient, vous appliquez), `manual` (ignore).
@@ -134,7 +137,7 @@ vôtre (ex. 9.0.1 alors que vous suivez 8.1) est signalée aussi. Une note qui n
 ## Tests et qualité
 
 ```sh
-python3 -m unittest discover -s tests -v      # 180 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
+python3 -m unittest discover -s tests -v      # 190 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
 ```
 
 Les tests de bout en bout lancent le **vrai programme** en sous-processus, avec un faux exécutable `docker` placé dans le

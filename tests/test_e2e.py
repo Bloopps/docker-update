@@ -120,6 +120,22 @@ cooldown = "{cooldown}"
         self.assertEqual(self.image(), "id-" + dig(2)[7:19])
         self.assertNotIn("removed", self.world())
 
+    def test_stopped_container_is_left_alone(self):
+        w = self.world()
+        w["containers"][f"{self.dir}|traefik"]["status"] = "exited"
+        with open(self.shim_state, "w") as f:
+            json.dump(w, f)
+        for args in (("run",), ("check",), ("now", "traefik", "--yes")):
+            r = self.du(*args)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.du("run")
+        self.assertIn("conteneur arrêté (exited), non touché", r.stdout)
+        self.assertEqual(self.image(), "id-old")
+        self.assertEqual(self.world()["containers"][f"{self.dir}|traefik"]["status"], "exited")
+        log = self.world()["log"]
+        self.assertEqual([c for c in log if c[:1] in (["pull"], ["tag"]) or c[:2] == ["image", "rm"] or "up" in c], [])
+        self.assertEqual([c for c in log if c[:1] == ["buildx"]], [], "le registre n'est même pas interrogé")
+
     def test_failure_alerts_without_rollback_and_exits_1(self):
         self.write_world(remote=2, fail_up=["id-" + dig(2)[7:19]])
         r = self.du("run")

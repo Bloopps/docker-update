@@ -2079,5 +2079,93 @@ class TestCleanup(Base):
         self.assertEqual(self.cmds(["docker", "image", "rm"]), [])
 
 
+# ── Conteneurs arrêtés : jamais touchés ─────────────────────────────────────
+
+class TestStoppedContainers(Base):
+    def setUp(self):
+        super().setUp()
+        self.world.add("traefik", "/stack/traefik", "traefik", "traefik:v3.6", 1, version="v3.7.13")
+        self.new_remote()
+        self.gh["traefik/traefik"] = (200, [advisory(self.clock)], "a")
+        self.gh_rel["traefik/traefik"] = (200, [release(self.clock, "v3.7.14", "Fixes CVE-2026-1111")], "r")
+
+    def mk(self, **kw):
+        svc = self.svc(advisories=["traefik/traefik"], release_notes=True, **kw)
+        return self.make([svc], settings={"default_cooldown": "0"})
+
+    def stop(self, status="exited"):
+        self.world.containers[("/stack/traefik", "traefik")]["status"] = status
+
+    def test_a_stopped_service_is_not_touched_at_all(self):
+        for status in ("exited", "created", "dead", "paused", "removing"):
+            with self.subTest(status=status):
+                self.setUp()
+                self.stop(status)
+                u = self.mk()
+                self.assertEqual(u.cycle(apply=True), 0)
+                self.assertIn(f"conteneur arrêté ({status}), non touché", self.logtext())
+                self.assertEqual(self.world.ups, [])
+                for sub in (["docker", "pull"], ["docker", "tag"], ["docker", "image", "rm"],
+                            ["docker", "buildx", "imagetools"], ["regctl"]):
+                    self.assertEqual(self.cmds(sub), [], f"{sub} ne doit pas être lancé")
+                self.assertEqual(self.gh_calls, [], "ni avis ni notes de release pour un service arrêté")
+                self.assertEqual(self.posts, [])
+                self.assertEqual(u.state.images, {}, "aucun compteur de délai ne démarre")
+
+    def test_notify_manual_and_check_leave_it_alone_too(self):
+        self.stop()
+        for mode in ("notify", "manual", "auto"):
+            self.mk(mode=mode).cycle(apply=True)
+        self.mk().cycle(apply=False)
+        self.assertEqual((self.world.ups, self.gh_calls, self.posts), ([], [], []))
+
+    def test_now_does_not_start_or_update_a_stopped_service(self):
+        self.stop()
+        u = self.mk(mode="notify")
+        self.assertEqual(u.now_cmd(["traefik"], yes=True), 0)
+        self.assertIn("rien à mettre à jour", self.logtext())
+        self.assertEqual(self.world.ups, [])
+        self.assertEqual(self.world.containers[("/stack/traefik", "traefik")]["status"], "exited")
+
+    def test_restarting_is_not_stopped(self):
+        self.stop("restarting")
+        self.assertEqual(self.mk().cycle(apply=True), 0)
+        self.assertEqual(len(self.world.ups), 1)
+
+    def test_a_started_service_is_picked_up_again(self):
+        self.stop()
+        u = self.mk()
+        u.cycle(apply=True)
+        self.assertEqual(self.world.ups, [])
+        self.stop("running")
+        u.cycle(apply=True)
+        self.assertEqual(len(self.world.ups), 1)
+
+    def test_only_the_stopped_member_of_a_group_is_left_alone(self):
+        self.world.add("web", "/stack/app", "web", "ghcr.io/x/app:1", 1)
+        self.world.add("worker", "/stack/app", "worker", "ghcr.io/x/app:1", 1)
+        self.world.registry["ghcr.io/x/app:1"] = manifest(2)
+        self.world.containers[("/stack/app", "worker")]["status"] = "exited"
+        svcs = [self.svc(n, "/stack/app", group="g") for n in ("web", "worker")]
+        u = self.make(svcs, settings={"default_cooldown": "0"})
+        self.assertEqual(u.cycle(apply=True), 0)
+        self.assertEqual([s for s, _ in self.world.ups], ["web"], "le service arrêté n'est ni mis à jour ni démarré")
+        self.assertEqual(self.world.containers[("/stack/app", "worker")]["status"], "exited")
+
+    def test_unreadable_status_is_an_error_and_changes_nothing(self):
+        orig = self.world.run
+
+        def run(argv, mutating=False, timeout=900):
+            if argv[:2] == ["docker", "inspect"] and argv[3] == "{{.State.Status}}":
+                return du.Result(1, "running\n", "boom")          # échec de docker : on ne se fie pas à la sortie
+            return orig(argv, mutating, timeout)
+
+        u = self.mk()
+        u.run = type("R", (), {"run": staticmethod(run), "run_bytes": staticmethod(self.world.run_bytes), "dry_run": False})()
+        self.assertEqual(u.cycle(apply=True), 1)
+        self.assertEqual(self.world.ups, [])
+        self.assertIn("ERREUR", self.logtext())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

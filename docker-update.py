@@ -9,6 +9,7 @@ Principe
   - Si le service ne repart pas : alerte, aucun retour arrière automatique (l'image précédente est conservée).
 
 Fonctions
+  - un conteneur arrêté n'est jamais touché (ni mise à jour, ni veille, ni nettoyage) ;
   - modes par service : auto (applique après le délai), notify (prévient seulement), manual (ignore) ;
   - groupes (plusieurs services d'une même image, mis à jour ensemble dans l'ordre du fichier) ;
   - fenêtre horaire (ex. 02:00-05:00) : on observe tout le temps, on n'applique que dans la fenêtre ;
@@ -68,6 +69,7 @@ SEVERITIES = ("low", "medium", "high", "critical")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 GHSA_RE = re.compile(r"^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$")
 POLICIES = ("fast", "alert")
+RUNNING_STATES = ("running", "restarting")   # les autres états (exited, created, paused, dead…) : conteneur laissé tel quel
 FLOATING_TAGS = {"latest", "main", "master", "dev", "edge", "nightly", "stable"}
 
 
@@ -774,6 +776,13 @@ class Updater:
         lines = [x for x in r.out.split() if x]
         return lines[0] if lines else ""
 
+    def container_status(self, cid: str) -> str:
+        r = self.run.run(["docker", "inspect", "--format", "{{.State.Status}}", cid])
+        status = clean_text(r.out.partition("|")[0], 30)
+        if r.rc != 0 or not status:
+            raise UpdateError("docker inspect du conteneur a échoué")
+        return status
+
     def image_ref(self, svc: Service) -> str:
         r = self.run.run(self._base(svc) + ["config", "--format", "json"])
         if r.rc != 0:
@@ -823,6 +832,10 @@ class Updater:
             cid = self.container_id(svc)
             if not cid:
                 return Eval(svc, "skipped", "conteneur absent")
+            status = self.container_status(cid)
+            if status not in RUNNING_STATES:
+                # un service arrêté (volontairement) n'est touché en rien : ni registre, ni mise à jour, ni veille, ni nettoyage
+                return Eval(svc, "skipped", f"conteneur arrêté ({status}), non touché")
             ref = self.image_ref(svc)
             repo, tag, pinned = split_ref(ref)
             if pinned:
