@@ -193,7 +193,7 @@ func writeLike(path string, data []byte, ref os.FileInfo) error {
 func checkResult(data []byte) (*config.Config, error) {
 	doc, err := tomlmini.Parse(data)
 	if err != nil {
-		return nil, fmt.Errorf("configuration illisible : %v", err)
+		return nil, fmt.Errorf("configuration illisible : %w", err)
 	}
 	cfg, err := config.Parse(doc)
 	if err != nil {
@@ -240,7 +240,7 @@ func applyEdit(env *Env, g globals, p *prompter, yes bool, oldData, newData []by
 		backup = fmt.Sprintf("%s.bak-%s-%d", g.config, stamp, i)
 	}
 	if err := writeLike(backup, oldData, info); err != nil {
-		return 0, fmt.Errorf("sauvegarde impossible, rien n'est écrit : %v", err)
+		return 0, fmt.Errorf("sauvegarde impossible, rien n'est écrit : %w", err)
 	}
 	if err := writeLike(g.config, newData, info); err != nil {
 		return 0, fmt.Errorf("écriture impossible (l'ancien fichier est intact) : %v", err)

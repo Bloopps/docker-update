@@ -191,17 +191,22 @@ func Main(args []string, env *Env) int {
 	}
 
 	code, err := execute(g, cmd, sub, env, log)
-	switch e := err.(type) {
-	case nil:
+	var (
+		ue *usageError
+		ce *config.Error
+		se *state.Error
+	)
+	switch {
+	case err == nil:
 		return code
-	case *usageError:
-		fmt.Fprintf(env.Stderr, "docker-update : %v\n(docker-update -h pour l'aide)\n", e)
+	case errors.As(err, &ue):
+		fmt.Fprintf(env.Stderr, "docker-update : %v\n(docker-update -h pour l'aide)\n", ue)
 		return 2
-	case *config.Error:
-		log("configuration : " + e.Msg)
+	case errors.As(err, &ce):
+		log("configuration : " + ce.Msg)
 		return 2
-	case *state.Error:
-		log("erreur : " + e.Msg)
+	case errors.As(err, &se):
+		log("erreur : " + se.Msg)
 		return 1
 	default:
 		log("erreur : " + err.Error())
@@ -290,7 +295,7 @@ var errBusy = errors.New("verrou pris")
 func lock(path string) (func(), error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o666)
 	if err != nil {
-		return nil, fmt.Errorf("verrou illisible : %v", err)
+		return nil, fmt.Errorf("verrou illisible : %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()

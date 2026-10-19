@@ -211,11 +211,6 @@ func TestInitCheckAllGreenAndEachFailure(t *testing.T) {
 			t.Fatalf("%q absent :\n%s", sub, r.out)
 		}
 	}
-	type breakIt struct {
-		label, want string
-		apply       func()
-		restore     func()
-	}
 	reply := func(k string, v dockerx.Result) func() {
 		old, had := r.docker.reply[k]
 		r.docker.reply[k] = v

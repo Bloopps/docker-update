@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,7 +52,7 @@ func TestRoundtripAndCorruption(t *testing.T) {
 		}
 		if _, err := Load(p); err == nil {
 			t.Errorf("%q devrait être refusé", bad)
-		} else if _, ok := err.(*Error); !ok {
+		} else if !errors.As(err, new(*Error)) {
 			t.Errorf("%q : erreur d'un autre type : %T", bad, err)
 		}
 	}

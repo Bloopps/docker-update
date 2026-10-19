@@ -5,6 +5,7 @@ package e2e
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -167,8 +168,8 @@ func (r *rig) duIn(stdin string, args ...string) (int, string) {
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if err != nil {
-		ee, ok := err.(*exec.ExitError)
-		if !ok {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
 			r.t.Fatal(err)
 		}
 		code = ee.ExitCode()
