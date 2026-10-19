@@ -93,18 +93,15 @@ mode, délai, `cleanup`, fenêtre et réglages de sécurité (l'outil le vérifi
 
 ## 4. Étape 3 — Installation (accord requis ; modifie le système)
 
-Demande l'accord, puis :
+Demande l'accord, puis le plus simple est de laisser l'outil tout installer (binaire dans `/usr/local/sbin`, dossiers, unités systemd,
+minuteur) : `sudo ./docker-update init` (voir README, « Installation »). Il demande confirmation avant chaque modification et n'applique aucune
+mise à jour. Les commandes équivalentes à la main, si `init` ne convient pas (`init --no-install` pour ne faire que la configuration) :
 
 ```sh
 sudo install -d -m 755 -o root -g root /etc/docker-update
-sudo install -m 755 -o root -g root docker-update /usr/local/sbin/docker-update      # le binaire compilé (voir README, « Installation »)
-sudo install -m 644 -o root -g root updates.toml /etc/docker-update/updates.toml        # la configuration validée
+sudo install -m 755 -o root -g root docker-update /usr/local/sbin/docker-update
+sudo install -m 644 -o root -g root updates.toml /etc/docker-update/updates.toml
 sudo install -m 644 -o root -g root deploy/docker-update.service deploy/docker-update.timer /etc/systemd/system/
-```
-
-Le dossier d'état et le dossier des identifiants du registre :
-
-```sh
 sudo install -d -m 700 -o root -g root /var/lib/docker-update /var/lib/docker-update/docker
 ```
 

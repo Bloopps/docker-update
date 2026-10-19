@@ -13,29 +13,24 @@ sur le serveur par un minuteur `systemd`. Alternative plus sûre à Watchtower :
 
 ## Installation
 
-Il faut `docker` avec le plugin `compose` sur le serveur (Linux amd64 ou arm64).
+Il faut `docker` avec le plugin `compose` sur le serveur (Linux amd64 ou arm64). Le reste, c'est l'outil qui s'en occupe :
 
 ```sh
-# 1. Récupérer le binaire : release GitHub (docker-update-linux-amd64 ou -arm64 + SHA256SUMS), ou le compiler :
-CGO_ENABLED=0 go build -trimpath -o docker-update ./cmd/docker-update      # Go 1.27 ou plus récent
-
-# 2. Le poser et installer le minuteur
-sudo install -m 755 docker-update /usr/local/sbin/docker-update
-sudo install -m 644 deploy/docker-update.service deploy/docker-update.timer /etc/systemd/system/
-sudo install -d -m 755 /etc/docker-update
-sudo install -d -m 700 /var/lib/docker-update
-
-# 3. Laisser l'outil vérifier l'installation et écrire la configuration à partir de vos conteneurs
-sudo docker-update init
+# Télécharger docker-update-linux-amd64 (ou -arm64) depuis la page « Releases » du dépôt, puis :
+chmod +x docker-update-linux-amd64
+sudo ./docker-update-linux-amd64 init
 ```
 
-`init` contrôle tout (docker, droits, unités systemd, accès au registre et à GitHub), dit ce qui manque et comment le corriger, puis
-liste vos conteneurs et vous demande, service par service, lesquels suivre. Il écrit `/etc/docker-update/updates.toml` après votre
-confirmation, **ne lance aucune mise à jour** et laisse tout en `notify`. Il propose ensuite d'enregistrer votre webhook Discord.
+`init` fait tout, dans l'ordre, en vous demandant avant chaque modification :
 
-Pour terminer : `sudo systemctl daemon-reload && sudo systemctl enable --now docker-update.timer`.
-Le minuteur fourni ne fait qu'**observer** (`check`) tant que vous n'avez pas décidé de passer à `run`. La procédure complète est dans
-[`docs/AGENT.md`](docs/AGENT.md).
+1. **Vérifie** le serveur : Docker et `compose`, droits, accès au registre et à GitHub. Ce qui bloque est expliqué avec la commande qui le corrige.
+2. **Installe** le binaire dans `/usr/local/sbin`, crée les dossiers, écrit les unités `systemd` (jamais écrasées si elles existent déjà).
+3. **Relève** vos conteneurs en marche et vous demande, service par service, lesquels suivre.
+4. **Écrit** `/etc/docker-update/updates.toml` après votre confirmation, propose d'enregistrer votre webhook Discord, puis **active le minuteur**.
+
+Rien n'est mis à jour pendant `init`, et chaque service est en mode `notify` (l'outil vous prévient, vous appliquez). Le minuteur ne fait
+qu'**observer** tant que vous n'avez pas décidé de passer à `run` ([`docs/AGENT.md`](docs/AGENT.md)). `init --check` rejoue les
+vérifications seules, à tout moment. Pour compiler soi-même : `CGO_ENABLED=0 go build -trimpath -o docker-update ./cmd/docker-update` (Go 1.27 ou plus récent).
 
 ## Au quotidien
 
@@ -45,7 +40,7 @@ docker-update check                 # observer, sans rien appliquer
 docker-update now traefik --yes     # appliquer tout de suite un service
 docker-update hold traefik          # le mettre en pause (unhold pour reprendre)
 docker-update add monapp --container monapp     # suivre un conteneur de plus
-docker-update rename monapp app     # renommer, delete pour retirer
+docker-update rename monapp app     # renommer ; delete pour retirer ; edit pour tout modifier dans $EDITOR
 docker-update validate --online     # vérifier la configuration, les outils et les dépôts GitHub
 ```
 

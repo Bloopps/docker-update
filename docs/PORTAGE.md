@@ -330,6 +330,8 @@ Tests ajoutés par le portage (absents du Python) :
 | `tests/test_differential.py` (14 scénarios, `DU_BIN`) ; **supprimé avec le Python** (dernier état : commit `50952f1`) | exécute le script Python et le binaire Go sur le même faux Docker et le même faux serveur HTTP, compare codes, sorties, état, requêtes et corps envoyés |
 | `internal/updater` : `TestExtra_HoldOfAGroupPausesEveryMember` | mutation : ignorer la pause d'un groupe (`held`) survivait à toute la suite Python |
 | `internal/updater` : `TestExtra_DryRunNeverWaitsNorProbes` | mutation : en simulation, `up` attendait et sondait quand même |
+| `internal/cli` : `TestEdit*`, `TestEditorIsChosen*`, `TestExport` | proposition 7 ; mutation : conflit d'édition, validation, ordre `$VISUAL` / `$EDITOR`, `unit`, droits 600, nettoyage du dossier temporaire, listes vides : tous détectés |
+| `internal/cli` : `TestInitInstall*`, `TestInitReplacesAnOutdatedInstalledBinary`, `TestTheTimerIsEnabledOnlyWithConsent` | `init` installe ; mutation : unité écrasée, pas de root, simulation qui installe, binaire périmé gardé, pas de `daemon-reload`, chemins de l'unité, minuteur activé sans accord : tous détectés (le `chmod` 700 après `MkdirAll` est équivalent hors `umask` restrictif) |
 | `internal/cli` : `TestRename*`, `TestValidateOnlineChecksTheGitHubRepos` ; `internal/tomledit` : `TestSetStringKeepsEverythingElse` | proposition 7 ; mutation : état non reporté (pauses, erreurs, alertes), garde « mêmes noms », 404 non compté, jeton non transmis : tous détectés |
 | `internal/updater` : `TestExtra_AnAlertWhoseDeliveryFailedIsSentAgainThenOnlyOnce`, `TestModes_NotifyModeRetriesAfterAFailedDelivery` | proposition 3 (appliquée) ; mutation : inscrire les alertes avant l'envoi, ou ignorer l'échec, est détecté |
 
@@ -351,7 +353,8 @@ d'un test) et 1 équivalent documenté. Rejouer : voir `docs/PORTAGE.md` ci-dess
 - **`init` vérifie l'installation** (demande du propriétaire, phase 7) : avant toute question, `init` contrôle en lecture seule Docker,
   `compose`, `regctl` / `buildx`, binaire, dossiers et droits, fichiers du webhook et du jeton, unités systemd et minuteur (mode
   `check` ou `run`), accès au registre et à GitHub ; `init --check` rejoue ces contrôles seuls. Spécifié dans `docs/PROMPT-reecriture-go.md` §9.2
-  (étape 0) et annoncé dans la section Installation du README. Implémenté en phase 7 (`internal/cli/preflight.go`, `initcmd.go`) ; `init` ne pose ni le binaire ni les unités : il dit ce qui manque.
+  (étape 0) et annoncé dans la section Installation du README. Implémenté en phase 7 (`internal/cli/preflight.go`, `initcmd.go`).
+- **`init` installe aussi tout lui-même** (nouvelle demande du propriétaire, qui remplace la décision précédente « `init` ne pose ni le binaire ni les unités ») : un seul binaire à lancer avec `sudo`, qui crée les dossiers, copie le binaire en `/usr/local/sbin`, écrit les unités systemd (embarquées depuis `deploy/` par `go:embed`, jamais écrasées si elles existent), recharge systemd et active le minuteur, chaque étape après confirmation (`internal/cli/install.go`).
 
 Écarts de la phase 7 (nouvelles commandes, pas de Python à comparer) :
 27. **`add` et `delete` n'acceptent pas les fichiers aux fins de ligne `\r\n`** (refus explicite) : l'édition textuelle garantit l'aller-retour octet pour octet seulement avec des `\n`.
@@ -365,6 +368,11 @@ d'un test) et 1 équivalent documenté. Rejouer : voir `docs/PORTAGE.md` ci-dess
 
 34. **`rename`** (proposition 7) : nouvelle commande ; `tomledit.SetString` ne change que la ligne visée (commentaire de fin de ligne conservé) ; refuse une valeur qui n'est pas un texte sur une ligne.
 35. **`validate --online`** (proposition 7) : requête `GET {github_api}/repos/DÉPÔT` par dépôt distinct ; 404 = erreur (code 1), réseau coupé ou autre code = avertissement ; le jeton n'est jamais journalisé.
+
+36. **`init` installe** (voir section 4 bis) : copie du binaire, dossiers, unités systemd, `daemon-reload`, activation du minuteur ; `--no-install` pour s'en passer. Les unités fournies ne contiennent plus le chemin de sauvegarde de la tirelire (`ReadWritePaths`), devenu inutile sans `pre_hook`.
+37. **`edit`** (proposition 7) : copie de travail en 600 dans un dossier temporaire, éditeur `$VISUAL` / `$EDITOR` / `vi` lancé sans shell (seconde exception de `TestNoShellAnywhere`), validation, aperçu, sauvegarde ; refus si le fichier a changé pendant l'édition.
+38. **`export`** (proposition 7) : JSON de la configuration effective, durées en secondes ; aucun secret (seulement les chemins des fichiers de secrets).
+39. **Lint en CI** (proposition 5) : job `lint` avec `golangci-lint` (`.golangci.yml`) ; outil de développement, pas une dépendance du module.
 
 ## 5. Propositions
 
@@ -413,7 +421,7 @@ Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *ef
 ### Proposition 5 : `golangci-lint` en CI
 - **Quoi** : ajouter un lint en plus de `gofmt` et `go vet`. **Pourquoi** : attrape des erreurs ignorées et du code mort que `vet` laisse passer.
 - **Effet** : aucun sur l'outil. **Risque** : outil de développement tiers dans la CI (pas dans le module). **Effort** : petit.
-- **Recommandation** : à discuter (accord demandé par la mission §13).
+- **Recommandation** : à discuter (accord demandé par la mission §13). **État : accord du propriétaire, appliquée** (job `lint`, écart n° 39).
 
 ### Proposition 6 : lecture directe du registre, sans `buildx` ni `regctl`
 - **Quoi** : interroger l'API du registre en Go (requête `HEAD` sur le manifeste) et lire plusieurs images en parallèle.
@@ -426,5 +434,5 @@ Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *ef
 - **Pourquoi** : renommer à la main laisse des entrées orphelines dans l'état ; une faute de frappe sur un dépôt n'est vue qu'au passage suivant (réponse 404 traitée comme vide).
 - **Effet** : nouvelles commandes seulement. **Risque** : faible. **Effort** : moyen.
 - **Recommandation** : `rename` et la vérification des dépôts : faire ; `edit` et l'export : à discuter.
-- **État** : `rename` et `validate --online` appliqués (écarts n° 34 et 35) ; `edit` et l'export : non faits, en attente du propriétaire.
+- **État** : `rename`, `validate --online`, `edit` et `export` appliqués (écarts n° 34, 35, 37 et 38).
 

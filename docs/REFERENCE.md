@@ -9,41 +9,31 @@ Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
 
 ## Installation
 
-Le binaire Go est statique (aucune dépendance, ni Python ni bibliothèque système) pour Linux **amd64** et **arm64**.
-Il lui faut seulement `docker` (avec le plugin `compose`) sur l'hôte, et `regctl` si `registry_tool = "regctl"`.
-Une étiquette `v*` déclenche la publication d'une release GitHub (binaires `docker-update-linux-amd64` et `-arm64` et `SHA256SUMS`,
-à vérifier avec `sha256sum -c`). Sinon : on le compile, ou on prend l'artefact `docker-update-linux` de la CI.
+Le binaire Go est statique (aucune dépendance) pour Linux **amd64** et **arm64**. Il lui faut seulement `docker` (avec le plugin `compose`)
+sur l'hôte, et `regctl` si `registry_tool = "regctl"`. Une étiquette `v*` déclenche la publication d'une release GitHub (binaires
+`docker-update-linux-amd64` et `-arm64` et `SHA256SUMS`, à vérifier avec `sha256sum -c`) ; sinon on compile
+(`CGO_ENABLED=0 go build -trimpath -o docker-update ./cmd/docker-update`, Go 1.27 ou plus récent) ou on prend l'artefact de la CI.
 
-```sh
-# Compilation (Go 1.27 ou plus récent)
-CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty)" \
-  -o docker-update ./cmd/docker-update
-./docker-update version
+**`sudo ./docker-update init`** installe et configure tout :
 
-# Installation (root)
-sudo install -d -m 755 -o root -g root /etc/docker-update
-sudo install -m 755 -o root -g root docker-update /usr/local/sbin/docker-update
-sudo install -m 644 -o root -g root updates.toml /etc/docker-update/updates.toml     # partir de examples/ (voir la note sur `init`)
-sudo install -m 644 -o root -g root deploy/docker-update.service deploy/docker-update.timer /etc/systemd/system/
-sudo install -d -m 700 -o root -g root /var/lib/docker-update /var/lib/docker-update/docker
+1. **Contrôles** (lecture seule) : Docker et `compose`, `regctl` ou `buildx`, binaire, dossiers et droits (configuration, état, verrou),
+   fichiers du webhook et du jeton, unités systemd et minuteur (avec leur mode `check` ou `run`), accès au registre et à GitHub. Chaque point
+   s'affiche ✓, ✗ (bloquant : `init` s'arrête) ou ⚠ (n'empêche pas) avec la commande qui le corrige. `init --check` rejoue ces contrôles
+   seuls, à tout moment (code 0 si tout est ✓, 1 sinon).
+2. **Installation** (root, après confirmation ou avec `--yes`) : crée `/etc/docker-update` (755), `/var/lib/docker-update` et son
+   sous-dossier `docker` (700), le dossier du verrou ; copie le binaire en cours dans `/usr/local/sbin/docker-update` (755, remplacé s'il
+   diffère) ; écrit `docker-update.service` et `.timer` dans `/etc/systemd/system` avec les chemins de cette installation, puis
+   `systemctl daemon-reload`. **Une unité déjà présente n'est jamais écrasée** (vous avez pu l'adapter). `--no-install` saute cette étape.
+   Sans root, `init` s'arrête et dit de relancer avec `sudo` ; avec `--dry-run`, il liste seulement ce qu'il ferait.
+3. **Relevé** des conteneurs Compose qui tournent (lecture seule, jamais leur environnement) ; vérifie que l'outil retrouvera chacun (même
+   nom de projet que `docker compose config`, même conteneur pour `compose ps`) ; pose les questions service par service (suivre ? mode,
+   groupe, nettoyage, dépôt GitHub des avis, notes de release).
+4. **Écriture** de la configuration après aperçu complet et confirmation (droits 644), proposition de `set-webhook`, puis **activation du
+   minuteur** (`systemctl enable --now`, après confirmation ou avec `--yes`).
 
-# Webhook (saisie masquée, jamais en argument) puis vérification, sans rien appliquer
-sudo docker-update --config /etc/docker-update/updates.toml set-webhook     # écrit notify_url_file
-sudo docker-update --config /etc/docker-update/updates.toml validate
-sudo docker-update --config /etc/docker-update/updates.toml --dry-run check
-sudo systemctl daemon-reload && sudo systemctl enable --now docker-update.timer
-```
-
-**`docker-update init`** fait le reste. Il contrôle d'abord toute l'installation, en lecture seule : Docker et `compose`, `regctl` ou
-`buildx`, binaire, dossiers et droits (configuration, état, verrou), fichiers du webhook et du jeton, unités systemd et minuteur (avec leur
-mode `check` ou `run`), accès au registre et à GitHub. Chaque point s'affiche ✓, ✗ (bloquant : `init` s'arrête) ou ⚠ (à corriger, n'empêche
-pas) avec la commande qui le corrige ; `init --check` rejoue ces contrôles seuls, à tout moment (code 0 si tout est ✓, 1 sinon).
-Ensuite il relève les conteneurs Compose qui tournent (lecture seule, jamais leur environnement), vérifie que l'outil retrouvera chacun
-(même nom de projet que `docker compose config`, même conteneur pour `compose ps`), pose les questions service par service (suivre ? mode,
-groupe, nettoyage, dépôt GitHub des avis, notes de release), affiche le fichier complet, l'écrit après confirmation (droits 644), puis propose
-`set-webhook`. Il ne pose pas lui-même le binaire ni les unités : il dit ce qui manque. **Il ne lance aucune mise à jour et ne touche à aucun
-conteneur.** Par défaut le mode est `notify` ; `auto` demande de taper `auto` pour chaque service ou groupe. Écartés par défaut :
-Watchtower, le proxy du socket Docker et les bases de données (postgres, mysql, mariadb, mongo, redis, valkey, memcached), avec la raison.
+**`init` ne lance aucune mise à jour et ne touche à aucun conteneur.** Par défaut le mode est `notify` ; `auto` demande de taper `auto`
+pour chaque service ou groupe. Écartés par défaut : Watchtower, le proxy du socket Docker et les bases de données (postgres, mysql, mariadb,
+mongo, redis, valkey, memcached), avec la raison.
 
 Version non interactive : `init --yes [--mode notify|manual|auto] [--include nom,…] [--exclude nom,…]` (pas de groupes ; seuls les dépôts
 d'avis certains de la table intégrée sont repris). Un fichier existant n'est jamais écrasé : `init --force` le remplace après sauvegarde.
@@ -96,13 +86,15 @@ L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n
 | `status` | état mémorisé |
 | `set-webhook` | enregistre l'URL du webhook Discord (saisie masquée ou entrée standard, fichier `600`, jamais affichée) |
 | `notify-test` | envoie un message de test (vérifie le webhook) |
-| `init [--yes] [--check] [--force]` | vérifie l'installation, relève les conteneurs Compose qui tournent et crée la configuration (voir Installation) |
+| `init [--yes] [--check] [--force] [--no-install]` | installe (binaire, dossiers, unités systemd), vérifie, relève les conteneurs Compose qui tournent, crée la configuration et active le minuteur (voir Installation) |
 | `list` | tableau des services configurés : groupe, mode, délai, fenêtre, veille (avis, notes), pause ; lecture seule |
 | `add NOM --compose-dir D --service S [options]` | ajoute **un** service au fichier de configuration (voir ci-dessous) |
 | `rename ANCIEN NOUVEAU [--group]` | renomme un service (ou un groupe avec `--group`) dans le fichier et reporte pauses, erreurs et alertes de l'état sous le nouveau nom |
+| `edit [--yes]` | ouvre une copie de la configuration dans `$VISUAL` / `$EDITOR` (à défaut `vi`) ; si le résultat est invalide, propose de rouvrir ; sinon aperçu, confirmation, sauvegarde, écriture. Refuse d'écrire si le fichier a changé pendant l'édition |
+| `export` | écrit la configuration effective (défauts appliqués, durées en secondes) en JSON sur la sortie standard, pour des scripts ; lecture seule |
 | `delete NOM… [--group G] [--keep-state]` | retire des services du fichier (voir ci-dessous) |
 
-### Modifier la configuration : `add`, `rename` et `delete`
+### Modifier la configuration : `add`, `rename`, `edit` et `delete`
 
 Le fichier TOML reste la source de vérité : ces commandes l'éditent **par son texte**, sans toucher à vos commentaires ni à votre
 mise en forme. À chaque écriture : aperçu (diff), confirmation (`--yes` pour passer ; `--dry-run` pour ne rien écrire), sauvegarde de
