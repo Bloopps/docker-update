@@ -25,9 +25,10 @@ Condition d'arrêt générale : tout comportement qui ressemble à un danger pou
 | --- | --- |
 | `docker-update.py` | l'outil (Python ≥ 3.11, bibliothèque standard) |
 | `examples/updates.example.toml` | configuration d'exemple (placeholders à remplacer) |
+| `examples/updates.watchtower.toml` | les applications suivies par Watchtower, toutes en `notify` (placeholders à remplacer) |
 | `deploy/docker-update.service`, `.timer` | unités `systemd` (le service démarre en mode **`check`**, qui n'applique rien) |
 | `deploy/tirelire-predump.sh` | sauvegarde de la base avant une mise à jour de la tirelire (crochet) |
-| `tests/` | 114 tests (`python3 -m unittest discover -s tests`) |
+| `tests/` | 163 tests (`python3 -m unittest discover -s tests`) |
 
 Lis d'abord `README.md` (fonctionnement, sous-commandes, modèle de menace, limites connues).
 
@@ -44,7 +45,7 @@ Teste l'outil lui-même sans rien installer, depuis le dépôt cloné :
 ```sh
 python3 -m unittest discover -s tests 2>&1 | tail -5
 ```
-**Attendu : « OK », 114 tests.** Les tests ne créent que des fichiers temporaires et un serveur HTTP local sur `127.0.0.1`.
+**Attendu : « OK », 163 tests.** Les tests ne créent que des fichiers temporaires et un serveur HTTP local sur `127.0.0.1`.
 Si un test échoue, ne continue pas : donne la sortie.
 
 Vérifie que la lecture du digest distant fonctionne **depuis ce serveur** (c'est la commande exacte que l'outil utilise) :
@@ -148,7 +149,11 @@ sudo env DOCKER_CONFIG=/var/lib/docker-update/docker /usr/local/sbin/docker-upda
    pas l'étiquette de version : la veille de sécurité ne pourra rien conclure pour ce service. Note-le ; ne l'invente pas.
 4. **Les tests de fumée sont « OK »** (`HTTP 302/401/403` selon la configuration). Un code inattendu veut dire que `smoke_expect`
    est mal calibré pour ce site **ou** que le serveur n'atteint pas son propre nom DNS (hairpin) : adapte-le, ne le désactive pas en silence.
-5. Aucun message Discord n'a été envoyé (`check` n'envoie rien) et aucun service n'a redémarré (`docker ps`).
+5. **Chaque service avec `release_notes = true` affiche « notes de release … version détectée X ».** Si une ligne dit « version NON
+   détectée », l'image n'a pas d'étiquette de version lisible (`latest`, `main`, absente) : la veille des notes ne pourra rien
+   comparer (une seule alerte « impossible de comparer »). Note-le ; ne devine pas la version. Les lignes « ALERTE notes de
+   release » de `check` sont informatives (rien n'est envoyé) : rapporte-les à l'utilisateur.
+6. Aucun message Discord n'a été envoyé (`check` n'envoie rien) et aucun service n'a redémarré (`docker ps`).
 
 Rends compte avec la sortie (sans secret).
 
@@ -220,6 +225,10 @@ Conseil : un alias `du='sudo env DOCKER_CONFIG=/var/lib/docker-update/docker doc
 
 **Quand Discord annonce « Correctif de sécurité détecté »** : rien à faire, l'outil applique après `security_cooldown` (6 h) ; si c'est
 critique, la fenêtre horaire est ignorée. **Quand Discord annonce « VULNÉRABLE »** : aucune image corrigée n'est encore publiée ; surveiller.
+**Quand Discord annonce « Notes de release à lire »** : une release plus récente que la version en cours mentionne un motif de
+sécurité (CVE, GHSA, « security fix »…). C'est une alerte seulement : rien n'est accéléré. L'utilisateur lit la note (lien dans le
+message) et décide, puis `now <service> --yes`. Un message « mot *security* » (info) est un signal faible, sans CVE annoncé.
+**Quand Discord annonce « Impossible de comparer »** : la version en cours n'est pas lisible, aucune note n'est analysée pour ce service.
 **Quand Discord annonce « plage de versions illisible » ou « version … pas lisible »** : l'outil n'a pas pu conclure, à l'utilisateur de juger,
 puis `now <service> --yes` s'il décide d'appliquer.
 

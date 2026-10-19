@@ -13,6 +13,9 @@ Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
 - **Veille de sécurité.** Il lit les avis de sécurité publiés par les dépôts GitHub des projets suivis. Si un avis
   touche la version **en cours** et que l'image candidate (version lue dans ses étiquettes) n'est **plus** touchée,
   le délai est ramené à `security_cooldown` (6 h par défaut). Tout cas ambigu devient une **alerte**, jamais une accélération.
+- **Veille des notes de release** (optionnelle, par service). Beaucoup de projets corrigent des failles sans publier
+  d'avis. L'outil lit les notes des releases plus récentes que la version en cours et **alerte** s'il y trouve un motif
+  de sécurité. Jamais d'accélération : voir ci-dessous.
 - **Application exacte.** Il tire le digest évalué (pas « l'étiquette », qui a pu bouger), retague localement, puis
   recrée le service avec `docker compose up -d --no-deps --pull never --wait`.
 - **Retour arrière.** Si le service ne repart pas (sonde de santé, état après démarrage, test de fumée HTTP), retour à
@@ -52,7 +55,8 @@ l'outil **refuse de démarrer** sinon.
 **`[[service]]`** : `name`, `compose_dir`, `service` (obligatoires) ; `compose_files`, `mode` (défaut `notify`, le plus
 prudent), `cooldown`, `group`, `rollback` (défaut `true`), `health_timeout`, `pre_hook`, `window`, `smoke_url` +
 `smoke_expect`, `advisories`, `min_severity` (défaut `high`), `security_cooldown` (défaut `6h`), `security_policy`
-(`fast` ou `alert`). Les fautes de frappe dans les clés sont refusées.
+(`fast` ou `alert`), `release_notes` (défaut `false`), `release_notes_repos`, `release_notes_ignore`. Les fautes de
+frappe dans les clés sont refusées.
 
 ## Comment la veille de sécurité décide
 
@@ -66,12 +70,41 @@ prudent), `cooldown`, `group`, `rollback` (défaut `true`), `health_timeout`, `p
    de la première observation de l'image et de la publication de l'avis. Un avis tout frais n'est donc jamais instantané.
 6. Une version « à jour mais vulnérable » (aucune image corrigée n'existe encore) déclenche une alerte, une seule fois.
 
+## Veille des notes de release (alertes seulement)
+
+Activée service par service avec `release_notes = true`. Elle ne fait **qu'alerter** : une note de release est un texte
+écrit par un tiers, donc non fiable. Elle ne raccourcit jamais le délai, ne rend rien éligible, ne tire aucune image.
+
+1. Dépôt lu : `release_notes_repos` (liste « propriétaire/dépôt »), à défaut `advisories`. L'outil lit
+   `GET /repos/{dépôt}/releases?per_page=30`, avec les mêmes ETag, le même jeton (`github_token_file`) et le même
+   `advisory_poll` que les avis. Un échec de l'API (réseau, limite de débit, 404 : dépôt sans release ou privé) n'est
+   jamais une erreur et n'empêche jamais les mises à jour.
+2. Version en cours : étiquette `org.opencontainers.image.version` (ou `version_label`). Absente ou illisible
+   (`latest`, `main`…) : **une seule alerte « impossible de comparer »**, aucune note lue, aucune requête.
+3. Sont considérées les releases **strictement plus récentes** que la version en cours. Les brouillons et les
+   pré-versions (drapeau GitHub ou étiquette `-rc1`) sont toujours ignorés, ainsi que les étiquettes illisibles.
+4. Motifs **forts** (mots entiers, insensibles à la casse, bornés, 64 premiers Kio de chaque note) : `CVE-AAAA-NNNN+`,
+   `GHSA-xxxx-xxxx-xxxx`, `security fix(es)/update(s)/release(s)/patch(es)/advisory`, `vulnerab…`, `RCE`, `XSS`, `SSRF`,
+   `CSRF`, `SQL injection`, `privilege escalation`, `auth… bypass`, `path traversal`. Alerte de niveau « avertissement ».
+   Le mot **`security` seul** est un signal **faible** : alerte « info », **regroupée** (un message par service et par passage).
+5. `release_notes_ignore = ["npm audit", …]` : expressions régulières (insensibles à la casse) ; un motif trouvé dont
+   l'extrait correspond à l'une d'elles est écarté. Utile pour les notes énormes ou bruyantes (ex. `nodejs/node`).
+6. **Une alerte par (service, étiquette de release)**, mémorisée dans le fichier d'état (conservée 120 jours). Elle donne
+   le service, `version en cours → release`, les motifs, un extrait nettoyé et borné, et le lien de la release (reconstruit
+   par l'outil, jamais copié depuis la réponse). Aucune mention Discord possible.
+7. `check` journalise ces alertes (et la version détectée) sans rien envoyer ni mémoriser ; `run` notifie.
+
+Limites : la comparaison est numérique sur `X.Y[.Z]` ; une release d'une autre branche de maintenance plus récente que la
+vôtre (ex. 9.0.1 alors que vous suivez 8.1) est signalée aussi. Une note qui ne contient aucun des motifs ne déclenche rien
+(absence d'alerte ≠ absence de faille). Les images sans étiquette de version ne peuvent pas être comparées.
+
 ## Modèle de menace, en bref
 
 - **Aucun droit Docker pour un conteneur.** Ni socket-proxy, ni liste de montages à maintenir. Le script s'exécute en
   root (`systemd`, durci) et n'ouvre aucun port.
 - **Pas de shell.** Toutes les commandes sont des listes d'arguments ; une valeur de configuration ne devient jamais une commande.
-- **Entrées extérieures traitées comme non fiables** : résumés d'avis nettoyés et bornés, mentions Discord désactivées,
+- **Entrées extérieures traitées comme non fiables** : résumés d'avis et notes de release nettoyés et bornés (jamais
+  d'accélération depuis une note), mentions Discord désactivées,
   digest validé, manifeste borné, versions et plages lues strictement (jamais devinées).
 - **Secrets** : URL du webhook, jeton GitHub et identifiants du registre sont lus dans des fichiers `600`, jamais journalisés.
   Le contenu de `docker compose config` (qui contient les variables d'environnement) n'est jamais écrit dans les journaux.
@@ -92,7 +125,7 @@ prudent), `cooldown`, `group`, `rollback` (défaut `true`), `health_timeout`, `p
 ## Tests et qualité
 
 ```sh
-python3 -m unittest discover -s tests -v      # 114 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
+python3 -m unittest discover -s tests -v      # 163 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
 ```
 
 Les tests de bout en bout lancent le **vrai programme** en sous-processus, avec un faux exécutable `docker` placé dans le

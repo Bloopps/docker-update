@@ -60,6 +60,8 @@ NOTIFY_FORMATS = ("discord", "ntfy", "json")
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 DISCORD_MAX = 1900
 MAX_MANIFEST = 4 << 20
+MAX_API_BODY = 2 << 20
+MAX_RELEASES_BODY = 8 << 20
 SEVERITIES = ("low", "medium", "high", "critical")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 GHSA_RE = re.compile(r"^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$")
@@ -183,6 +185,84 @@ def compact_advisory(a) -> dict | None:
             "summary": clean_text(a.get("summary")), "withdrawn": bool(a.get("withdrawn_at"))}
 
 
+_RVER = re.compile(r"^v?(\d{1,6})\.(\d{1,6})(?:\.(\d{1,6}))?(?:([-+])([0-9A-Za-z.-]{1,64}))?$")
+
+
+def parse_release_version(value) -> tuple[int, int, int, int] | None:
+    """Version d'une étiquette de release ou d'une image : « v2.45.1 », « 24.04 », « 2026.7.8 ».
+    Plus souple que parse_version (X.Y accepté, patch = 0), mais toujours stricte : « latest », « main » ou
+    « 18-vectorchord0.5.3 » donnent None. Dernier élément : 0 pour une pré-version (donc plus petite)."""
+    m = _RVER.match(str(value or "").strip())
+    if not m:
+        return None
+    return int(m[1]), int(m[2]), int(m[3] or 0), 0 if m[4] == "-" else 1
+
+
+# Motifs « forts » des notes de release : mots entiers, quantificateurs bornés (pas de retour arrière coûteux).
+_RN = re.IGNORECASE
+RELEASE_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    ("CVE", re.compile(r"\bCVE-\d{4}-\d{4,}\b", _RN)),
+    ("GHSA", re.compile(r"\bGHSA(?:-[23456789cfghjmpqrvwx]{4}){3}\b", _RN)),
+    ("correctif de sécurité", re.compile(
+        r"\bsecurity[ \t]+(?:fix(?:es)?|updates?|releases?|patch(?:es)?|advisor(?:y|ies))\b", _RN)),
+    ("vulnérabilité", re.compile(r"\bvulnerab\w{0,20}", _RN)),
+    ("RCE/XSS/SSRF/CSRF", re.compile(r"\b(?:RCE|XSS|SSRF|CSRF)\b", _RN)),
+    ("injection SQL", re.compile(r"\bSQL[ \t]+injections?\b", _RN)),
+    ("élévation de privilèges", re.compile(r"\bprivilege[ \t]+escalations?\b", _RN)),
+    ("contournement d'authentification", re.compile(r"\bauth\w{0,15}[ \t]+bypass(?:es)?\b", _RN)),
+    ("path traversal", re.compile(r"\bpath[ \t]+traversals?\b", _RN)),
+)
+# Le mot « security » seul est trop bruyant : signal faible (alerte d'information, regroupée).
+RELEASE_WEAK = re.compile(r"\bsecurity\b", _RN)
+TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,79}$")
+MAX_NOTES = 64 << 10          # on n'analyse que les 64 premiers Kio d'une note de release
+MAX_STRONG_HITS, MAX_WEAK_HITS = 30, 3
+
+
+def scan_notes(text) -> list[dict]:
+    """Motifs de sécurité trouvés dans une note de release (texte non fiable : borné, jamais interprété).
+    Chaque résultat : {k: famille, t: texte trouvé, x: extrait nettoyé, w: True si signal faible}."""
+    body = text[:MAX_NOTES] if isinstance(text, str) else ""
+    hits: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for kind, pat in RELEASE_PATTERNS:
+        if len(hits) >= MAX_STRONG_HITS:
+            break
+        for m in pat.finditer(body):
+            key = (kind, m[0].lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append({"k": kind, "t": clean_text(m[0], 60), "w": False,
+                         "x": clean_text(body[max(0, m.start() - 70):m.end() + 70], 160)})
+            if len(hits) >= MAX_STRONG_HITS:
+                break
+    weak = 0
+    for m in RELEASE_WEAK.finditer(body):
+        hits.append({"k": "security", "t": clean_text(m[0], 60), "w": True,
+                     "x": clean_text(body[max(0, m.start() - 70):m.end() + 70], 160)})
+        weak += 1
+        if weak >= MAX_WEAK_HITS:
+            break
+    return hits
+
+
+def compact_release(r) -> dict | None:
+    """Réduit une release GitHub aux champs utiles (la note elle-même n'est pas conservée) ; None si inutilisable."""
+    if not isinstance(r, dict):
+        return None
+    tag = r.get("tag_name")
+    if not isinstance(tag, str) or not TAG_RE.match(tag):
+        return None
+    try:
+        pub = int(datetime.datetime.fromisoformat(
+            str(r.get("published_at") or r.get("created_at")).replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        pub = 0
+    return {"tag": tag, "pub": pub, "draft": bool(r.get("draft")), "pre": bool(r.get("prerelease")),
+            "hits": scan_notes(r.get("body"))}
+
+
 def split_ref(ref: str) -> tuple[str, str, str | None]:
     """(dépôt, étiquette, digest épinglé ou None). 'traefik:v3.6' -> ('traefik', 'v3.6', None)."""
     digest = None
@@ -236,6 +316,9 @@ class Service:
     min_severity: str = "high"
     security_cooldown: int = 6 * 3600
     security_policy: str = "fast"
+    release_notes: bool = False
+    release_notes_repos: list[str] = field(default_factory=list)
+    release_notes_ignore: list[str] = field(default_factory=list)
 
     @property
     def unit(self) -> str:
@@ -253,7 +336,8 @@ _SETTINGS_KEYS = {"state_file", "lock_file", "registry_tool", "notify_url_file",
                   "github_api", "github_token_file", "advisory_poll", "advisory_lookback", "version_label"}
 _SERVICE_KEYS = {"name", "compose_dir", "service", "compose_files", "mode", "cooldown", "group",
                  "rollback", "health_timeout", "pre_hook", "window", "smoke_url", "smoke_expect",
-                 "advisories", "min_severity", "security_cooldown", "security_policy"}
+                 "advisories", "min_severity", "security_cooldown", "security_policy",
+                 "release_notes", "release_notes_repos", "release_notes_ignore"}
 
 
 def _check_keys(where: str, data: dict, allowed: set[str]) -> None:
@@ -355,13 +439,33 @@ def parse_config(data: dict) -> Config:
         policy = str(s.get("security_policy", "fast"))
         if policy not in POLICIES:
             raise ConfigError(f"{name} : security_policy doit valoir {POLICIES}")
+        rn = s.get("release_notes", False)
+        if not isinstance(rn, bool):
+            raise ConfigError(f"{name} : release_notes doit valoir true ou false")
+        rn_repos = s.get("release_notes_repos", [])
+        if not isinstance(rn_repos, list) or not all(isinstance(r, str) and REPO_RE.match(r) for r in rn_repos):
+            raise ConfigError(f"{name} : release_notes_repos doit être une liste de « propriétaire/dépôt » GitHub")
+        rn_ignore = s.get("release_notes_ignore", [])
+        if not isinstance(rn_ignore, list) or not all(isinstance(p, str) and 0 < len(p) <= 200 for p in rn_ignore):
+            raise ConfigError(f"{name} : release_notes_ignore doit être une liste d'expressions (200 caractères au plus)")
+        for pat in rn_ignore:
+            try:
+                re.compile(pat, re.IGNORECASE)
+            except re.error as e:
+                raise ConfigError(f"{name} : release_notes_ignore : expression invalide {pat!r} ({e})")
+        if not rn and (rn_repos or rn_ignore):
+            raise ConfigError(f"{name} : release_notes_repos / release_notes_ignore sans release_notes = true")
+        if rn and not (rn_repos or advisories):
+            raise ConfigError(f"{name} : release_notes = true demande release_notes_repos (ou advisories) : "
+                              f"le dépôt GitHub à lire")
         services.append(Service(
             name=name, compose_dir=cdir, service=svc_name, compose_files=files, mode=mode,
             cooldown=parse_duration(s["cooldown"]) if "cooldown" in s else st.default_cooldown,
             group=group, rollback=bool(s.get("rollback", True)), health_timeout=ht, pre_hook=hooks,
             window=parse_window(s["window"] if "window" in s else st.window),
             smoke_url=smoke_url, smoke_expect=list(smoke_expect), advisories=list(advisories),
-            min_severity=min_sev, security_policy=policy,
+            min_severity=min_sev, security_policy=policy, release_notes=rn,
+            release_notes_repos=list(rn_repos), release_notes_ignore=list(rn_ignore),
             security_cooldown=parse_duration(s["security_cooldown"]) if "security_cooldown" in s else 6 * 3600))
 
     groups: dict[str, list[Service]] = {}
@@ -446,7 +550,7 @@ class State:
 
     def __init__(self, path: str):
         self.path = path
-        self.data: dict = {"images": {}, "holds": [], "errors": {}, "advisories": {}, "alerts": {}}
+        self.data: dict = {"images": {}, "holds": [], "errors": {}, "advisories": {}, "alerts": {}, "releases": {}}
         try:
             with open(path, encoding="utf-8") as f:
                 loaded = json.load(f)
@@ -456,7 +560,8 @@ class State:
             raise UpdateError(f"état illisible : {path} (le déplacer pour repartir de zéro)")
         if not isinstance(loaded, dict):
             raise UpdateError(f"état invalide : {path}")
-        for k, default in (("images", {}), ("holds", []), ("errors", {}), ("advisories", {}), ("alerts", {})):
+        for k, default in (("images", {}), ("holds", []), ("errors", {}), ("advisories", {}), ("alerts", {}),
+                           ("releases", {})):
             v = loaded.get(k, default)
             if not isinstance(v, type(default)):
                 raise UpdateError(f"état invalide ({k}) : {path}")
@@ -546,7 +651,9 @@ class Notifier:
 
 def github_get(url: str, token: str = "", etag: str = "") -> tuple[int, object, str]:
     """GET JSON sur l'API GitHub. Retourne (code HTTP, contenu, ETag) ; code 0 si le réseau échoue.
-    Le jeton éventuel ne sert qu'à relever la limite de requêtes ; il n'est jamais journalisé."""
+    Le jeton éventuel ne sert qu'à relever la limite de requêtes ; il n'est jamais journalisé.
+    Une liste de releases (notes volumineuses) a une limite de lecture plus large que les avis ; trop grande : code 0."""
+    limit = MAX_RELEASES_BODY if url.split("?", 1)[0].endswith("/releases") else MAX_API_BODY
     headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
                "User-Agent": "docker-update/1.0"}
     if token:
@@ -555,7 +662,7 @@ def github_get(url: str, token: str = "", etag: str = "") -> tuple[int, object, 
         headers["If-None-Match"] = etag
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=15) as r:
-            return r.status, json.loads(r.read(2 << 20)), r.headers.get("ETag", "")
+            return r.status, json.loads(r.read(limit)), r.headers.get("ETag", "")
     except urllib.error.HTTPError as e:
         return e.code, None, (e.headers.get("ETag", "") if e.headers else "")
     except (urllib.error.URLError, OSError, ValueError):
@@ -760,30 +867,43 @@ class Updater:
         except OSError:
             return ""
 
-    def advisories(self, repo: str) -> list[dict]:
-        """Avis publiés par le dépôt, en cache (ETag) : au plus une requête par `advisory_poll`."""
+    def _poll_github(self, bucket: str, repo: str, path: str, compact: Callable[[object], dict | None],
+                     label: str, empty: tuple[int, ...] = (), backoff: tuple[int, ...] = ()) -> list[dict]:
+        """Liste GitHub d'un dépôt, en cache (ETag) : au plus une requête par `advisory_poll`.
+        `empty` : codes qui signifient « rien à lire » (liste vide valide) ; `backoff` : codes après lesquels
+        on attend aussi tout l'intervalle (limite de débit) au lieu de réessayer à chaque passage."""
         st = self.cfg.settings
-        cache = self.state.data["advisories"]
+        cache = self.state.data[bucket]
         rec = cache.get(repo) or {}
         now = int(self.now())
-        if rec.get("ok") and now - int(rec.get("fetched", 0)) < st.advisory_poll:
+        if now - int(rec.get("fetched", 0)) < st.advisory_poll and (rec.get("ok") or rec.get("err") in backoff):
             return rec.get("items", [])
-        url = f"{st.github_api}/repos/{repo}/security-advisories?per_page=50"
-        code, body, etag = self.gh_get(url, self._token(), rec.get("etag", ""))
+        code, body, etag = self.gh_get(f"{st.github_api}/repos/{repo}/{path}", self._token(), rec.get("etag", ""))
         if code == 304 and rec.get("ok"):
             rec["fetched"] = now
         elif code == 200 and isinstance(body, list):
-            items = [c for c in (compact_advisory(a) for a in body) if c]
-            rec = {"ok": True, "fetched": now, "etag": etag, "items": items}
+            rec = {"ok": True, "fetched": now, "etag": etag, "items": [c for c in (compact(a) for a in body) if c]}
+        elif code in empty:
+            rec = {"ok": True, "fetched": now, "etag": "", "items": []}
         else:
             # échec (réseau, limite de débit, dépôt sans avis publics) : on garde l'ancien contenu, on réessaie plus tard
             if not rec.get("err"):
-                self.log(f"  veille de sécurité : {repo} injoignable (HTTP {code}) ; réessai plus tard")
+                self.log(f"  {label} : {repo} injoignable (HTTP {code}) ; réessai plus tard")
             rec = dict(rec, fetched=now, err=code)
             if not rec.get("ok"):
                 rec["items"] = []
         cache[repo] = rec
         return rec.get("items", [])
+
+    def advisories(self, repo: str) -> list[dict]:
+        """Avis publiés par le dépôt."""
+        return self._poll_github("advisories", repo, "security-advisories?per_page=50", compact_advisory,
+                                 "veille de sécurité")
+
+    def releases(self, repo: str) -> list[dict]:
+        """30 dernières releases du dépôt (compactées). 404 : dépôt sans release lisible, ce n'est pas une erreur."""
+        return self._poll_github("releases", repo, "releases?per_page=30", compact_release,
+                                 "notes de release", empty=(404,), backoff=(403, 429))
 
     def _labels(self, target: str) -> dict:
         r = self.run.run(["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", target])
@@ -819,14 +939,18 @@ class Updater:
         observation de l'image et publication de l'avis. Un avis tout neuf ne déclenche donc rien d'instantané."""
         return max(e.first_seen, e.adv_pub) + e.svc.security_cooldown
 
-    def alert(self, key: str, title: str, text: str, level: str = "warn") -> None:
-        self.log(f"  ALERTE sécurité : {title} — {text}")
+    def alert(self, key: str | list[str], title: str, text: str, level: str = "warn",
+              label: str = "ALERTE sécurité") -> None:
+        """Journalise, puis notifie une seule fois par clé (plusieurs clés : un message pour le lot)."""
+        self.log(f"  {label} : {title} — {text}")
         if not self.alerts_on:
             return
+        keys = [key] if isinstance(key, str) else key
         alerts = self.state.data["alerts"]
-        if key in alerts:
+        if all(k in alerts for k in keys):
             return
-        alerts[key] = int(self.now())
+        for k in keys:
+            alerts[k] = int(self.now())
         self.notifier.send(title, text, level)
 
     def security_pass(self, evals: list[Eval], allow_pull: bool) -> None:
@@ -899,6 +1023,69 @@ class Updater:
                 self.alert(f"correctif:{svc.name}:{e.remote}", f"Correctif de sécurité disponible : {svc.name}",
                            f"{fixed_names} corrigé dans {candidate} (en cours : {current}). Pas de mise à jour "
                            f"automatique ({why}) : `docker-update now {svc.name} --yes` pour l'appliquer.", "warn")
+
+    # -- veille des notes de release (ALERTES SEULEMENT) ---------------------
+    # Une note de release est un texte non fiable : elle ne touche jamais au délai, à l'éligibilité ni à la fenêtre.
+
+    def _release_version_of(self, target: str) -> str:
+        labels = self._labels(target)
+        for key in (self.cfg.settings.version_label, "org.label-schema.version"):
+            v = str(labels.get(key) or "")
+            if parse_release_version(v):
+                return v
+        return ""
+
+    @staticmethod
+    def _external(value, limit: int) -> str:
+        """Texte venu d'une note : nettoyé, borné, et sans mention possible (« @ » neutralisé)."""
+        return clean_text(value, limit).replace("@", "@\u200b")
+
+    def release_pass(self, evals: list[Eval]) -> None:
+        label = "ALERTE notes de release"
+        alerts = self.state.data["alerts"]
+        for e in evals:
+            svc = e.svc
+            if not svc.release_notes or e.status not in ("pending", "uptodate") or not e.old_image_id:
+                continue
+            current = self._release_version_of(e.old_image_id)
+            cur = parse_release_version(current)
+            if cur is None:
+                self.alert(f"release-version:{svc.name}", f"Notes de release non analysées : {svc.name}",
+                           f"Impossible de comparer : la version en cours est absente ou illisible (étiquette "
+                           f"{self.cfg.settings.version_label}). Aucune note de release n'est lue pour ce service.",
+                           "info", label)
+                continue
+            shown = current.lstrip("v")
+            ignore = [re.compile(p, re.IGNORECASE) for p in svc.release_notes_ignore]
+            newer: list[tuple[tuple, str, dict]] = []
+            seen: set[str] = set()
+            for repo in svc.release_notes_repos or svc.advisories:
+                for r in self.releases(repo):
+                    v = parse_release_version(r["tag"])
+                    if r["draft"] or r["pre"] or r["tag"] in seen or v is None or v[3] == 0 or v <= cur:
+                        continue
+                    seen.add(r["tag"])
+                    newer.append((v, repo, r))
+            weak: list[tuple[str, str]] = []
+            for _, repo, r in sorted(newer, key=lambda t: t[0]):
+                hits = [h for h in r["hits"] if not any(p.search(h["x"]) or p.search(h["t"]) for p in ignore)]
+                strong = [h for h in hits if not h["w"]]
+                url = f"https://github.com/{repo}/releases/tag/{r['tag']}"
+                if strong:
+                    motifs = ", ".join(dict.fromkeys(self._external(h["t"], 60) for h in strong[:12]))
+                    self.alert(f"release:{svc.name}:{r['tag']}",
+                               f"Notes de release à lire : {svc.name} {shown} → {r['tag']}",
+                               f"Motifs : {motifs}\nExtrait : « {self._external(strong[0]['x'], 160)} »\nLien : {url}\n"
+                               f"Alerte seulement : le délai de mise à jour n'est pas modifié.", "warn", label)
+                elif hits:
+                    if not self.alerts_on or f"release-info:{svc.name}:{r['tag']}" not in alerts:
+                        weak.append((r["tag"], url))
+            if weak:
+                lines = [f"- {t} : {u}" for t, u in weak[:10]] + ([f"… et {len(weak) - 10} autre(s)"] if len(weak) > 10 else [])
+                self.alert([f"release-info:{svc.name}:{t}" for t, _ in weak],
+                           f"Notes de release : {svc.name} {shown}, mot « security » dans {len(weak)} release(s)",
+                           "Signal faible (le mot seul, sans CVE ni correctif annoncé) :\n" + "\n".join(lines),
+                           "info", label)
 
     def _candidate_version(self, e: Eval) -> str:
         """Version de l'image candidate : on la télécharge (sans l'exécuter) pour lire ses étiquettes."""
@@ -1033,7 +1220,15 @@ class Updater:
                     self.log(f"  veille de sécurité {e.svc.name}: version détectée {v}" if v else
                              f"  veille de sécurité {e.svc.name}: version NON détectée (étiquette "
                              f"{self.cfg.settings.version_label} absente) — aucun avis ne pourra être évalué")
+        if not apply:
+            for e in evals:
+                if e.svc.release_notes and e.status in ("pending", "uptodate") and e.old_image_id:
+                    v = self._release_version_of(e.old_image_id)
+                    self.log(f"  notes de release {e.svc.name}: version détectée {v}" if v else
+                             f"  notes de release {e.svc.name}: version NON détectée (étiquette "
+                             f"{self.cfg.settings.version_label} absente ou illisible) — aucune note ne pourra être comparée")
         self.security_pass(evals, allow_pull=apply)
+        self.release_pass(evals)
         for e in evals:
             self.log(self.describe(e))
         failures = sum(1 for e in evals if e.status == "error")

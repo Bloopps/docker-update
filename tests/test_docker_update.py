@@ -170,13 +170,18 @@ class Base(unittest.TestCase):
         with open(self.url_file, "w") as f:
             f.write("https://discord.test/api/webhooks/1/SECRET-TOKEN\n")
         self.state_path = os.path.join(self.tmp.name, "state", "state.json")
-        self.gh: dict[str, tuple] = {}              # "owner/repo" -> (code, corps, etag)
+        self.gh: dict[str, tuple] = {}              # "owner/repo" -> (code, corps, etag) des avis
+        self.gh_rel: dict[str, tuple] = {}          # idem pour les releases
         self.gh_calls: list[tuple[str, str, str]] = []
 
     def _gh_get(self, url, token, etag):
         self.gh_calls.append((url, token, etag))
-        repo = url.split("/repos/", 1)[1].split("/security-advisories")[0]
-        code, body, new_etag = self.gh.get(repo, (404, None, ""))
+        if "/releases?" in url:
+            repo = url.split("/repos/", 1)[1].split("/releases")[0]
+            code, body, new_etag = self.gh_rel.get(repo, (404, None, ""))
+        else:
+            repo = url.split("/repos/", 1)[1].split("/security-advisories")[0]
+            code, body, new_etag = self.gh.get(repo, (404, None, ""))
         if code == 200 and etag and etag == new_etag:
             return 304, None, new_etag
         return code, body, new_etag
@@ -1429,6 +1434,515 @@ service = "a"
         u.http = lambda url: (seen.append(url), 200)[1]
         u.heartbeat()
         self.assertEqual(seen, [], "pas de signal en simulation")
+
+
+# ── Veille des notes de release (alertes seulement) ─────────────────────────
+
+def release(clock, tag, body="", pre=False, draft=False, **extra):
+    import datetime as _dt
+    when = _dt.datetime.fromtimestamp(clock.t - 3600, _dt.timezone.utc).isoformat()
+    return {"tag_name": tag, "name": tag, "body": body, "prerelease": pre, "draft": draft,
+            "published_at": None if draft else when, "html_url": "https://evil.example/phish", **extra}
+
+
+class TestReleaseScan(unittest.TestCase):
+    def kinds(self, text, weak=False):
+        return sorted({h["k"] for h in du.scan_notes(text) if h["w"] == weak})
+
+    def test_parse_release_version(self):
+        self.assertEqual(du.parse_release_version("v2.45.1"), (2, 45, 1, 1))
+        self.assertEqual(du.parse_release_version("24.04"), (24, 4, 0, 1))
+        self.assertEqual(du.parse_release_version("2026.7.8"), (2026, 7, 8, 1))
+        self.assertEqual(du.parse_release_version("3.7.0-rc1"), (3, 7, 0, 0))
+        self.assertEqual(du.parse_release_version("1.2.3+build"), (1, 2, 3, 1))
+        for bad in ("", None, "latest", "main", "18-vectorchord0.5.3", "release-1.2.3", "1", "1.2.3.4", "v1.x", "1.2 beta"):
+            self.assertIsNone(du.parse_release_version(bad), bad)
+        self.assertLess(du.parse_release_version("3.7.0-rc1"), du.parse_release_version("3.7.0"))
+        self.assertLess(du.parse_release_version("v24.4.0"), du.parse_release_version("v24.22.0"))
+
+    def test_strong_patterns(self):
+        cases = {
+            "Fixes CVE-2026-12345 and cve-2025-1234567": ["CVE"],
+            "see GHSA-qxcr-4rv3-v23r": ["GHSA"],
+            "This is a Security Fix release": ["correctif de sécurité"],
+            "several security fixes, a security update, the security advisory": ["correctif de sécurité"],
+            "a vulnerability, several vulnerabilities, vulnerable to": ["vulnérabilité"],
+            "remote code execution (RCE), xss, SSRF and CSRF": ["RCE/XSS/SSRF/CSRF"],
+            "SQL injection in search": ["injection SQL"],
+            "privilege escalation": ["élévation de privilèges"],
+            "authentication bypass and auth bypass and authorization bypass": ["contournement d'authentification"],
+            "path traversal when extracting": ["path traversal"],
+        }
+        for text, want in cases.items():
+            self.assertEqual(self.kinds(text), want, text)
+
+    def test_near_misses_do_not_match(self):
+        for text in ("CVE-2026-123", "CVE-26-12345", "GHSA-aaaa-bbbb-cccc-dddd", "GHSA-qxcr-4rv3", "GHSA-ILIL-1111-OOOO",
+                     "securityfix", "insecurity fixes", "the security of fixes", "ARCEUS", "XSSX", "ssrfs", "preSQL injection",
+                     "sql  injected", "privileged escalation", "authbypass", "unauth_bypass", "path-traversals-of", "traversal path"):
+            self.assertEqual(self.kinds(text), [], text)
+
+    def test_security_alone_is_weak(self):
+        self.assertEqual(self.kinds("Improve security of the login page", weak=True), ["security"])
+        self.assertEqual(self.kinds("Improve security of the login page"), [])
+        self.assertEqual(self.kinds("insecurity, Securityx, x-security-y", weak=True), ["security"], "x-security-y : mot entier")
+        self.assertEqual(self.kinds("a security fix", weak=False), ["correctif de sécurité"])
+
+    def test_hits_are_deduplicated_and_bounded(self):
+        hits = du.scan_notes("CVE-2026-1111 " * 500 + " ".join(f"CVE-2026-{i:04d}" for i in range(2000, 2100)))
+        strong = [h for h in hits if not h["w"]]
+        self.assertEqual(len(strong), du.MAX_STRONG_HITS)
+        self.assertEqual(len({h["t"] for h in strong}), len(strong), "aucun doublon")
+        self.assertLessEqual(len([h for h in hits if h["w"]]), du.MAX_WEAK_HITS)
+        for h in du.scan_notes("x" * 500 + " vulnerable \n\x00 @everyone " + "y" * 500):
+            self.assertLessEqual(len(h["x"]), 160)
+            self.assertLessEqual(len(h["t"]), 60)
+            self.assertNotIn("\n", h["x"])
+
+    def test_only_the_head_of_a_huge_note_is_read(self):
+        text = "a " * (du.MAX_NOTES // 2) + " CVE-2026-9999"
+        self.assertEqual(du.scan_notes(text), [])
+        import time
+        t = time.monotonic()
+        du.scan_notes("vulnerab" + "a" * 70000 + " auth" + "x" * 70000 + " " * 70000 + "security fix")
+        du.scan_notes(("auth " * 20000) + ("path " * 20000))
+        self.assertLess(time.monotonic() - t, 2, "motifs bornés : pas d'explosion de temps")
+        self.assertEqual(du.scan_notes(None), [])
+        self.assertEqual(du.scan_notes(42), [])
+
+    def test_compact_release(self):
+        clock = Clock()
+        r = du.compact_release(release(clock, "v2.45.1", "Fixes CVE-2026-12345"))
+        self.assertEqual((r["tag"], r["draft"], r["pre"]), ("v2.45.1", False, False))
+        self.assertGreater(r["pub"], 0)
+        self.assertEqual(r["hits"][0]["t"], "CVE-2026-12345")
+        self.assertNotIn("html_url", r)
+        self.assertNotIn("body", r, "la note n'est pas conservée dans l'état")
+        self.assertTrue(du.compact_release(release(clock, "v1.0.0", pre=True))["pre"])
+        d = du.compact_release(release(clock, "v1.0.0", draft=True))
+        self.assertTrue(d["draft"])
+        self.assertEqual(d["pub"], 0, "un brouillon n'a pas de date de publication")
+        for bad in (None, 3, [], {}, {"tag_name": 5}, release(clock, ""), release(clock, "a/b"), release(clock, "../x"),
+                    release(clock, "v1 0"), release(clock, "x" * 200), release(clock, "-rf"), release(clock, "v1\n2")):
+            self.assertIsNone(du.compact_release(bad), bad)
+        self.assertEqual(du.compact_release({"tag_name": "v1.0.0", "body": None})["hits"], [])
+
+    def test_config_release_keys(self):
+        one = {"name": "a", "compose_dir": "/x", "service": "a"}
+        d = du.parse_config({"service": [one]}).services[0]
+        self.assertEqual((d.release_notes, d.release_notes_repos, d.release_notes_ignore), (False, [], []))
+        s = du.parse_config({"service": [dict(one, release_notes=True, release_notes_repos=["a/b"],
+                                              release_notes_ignore=["npm audit", r"CVE-2025-\d+"])]}).services[0]
+        self.assertEqual((s.release_notes, s.release_notes_repos, s.release_notes_ignore),
+                         (True, ["a/b"], ["npm audit", r"CVE-2025-\d+"]))
+        self.assertTrue(du.parse_config({"service": [dict(one, release_notes=True, advisories=["a/b"])]}).services[0].release_notes)
+        bad = [dict(one, release_notes="true"), dict(one, release_notes=1), dict(one, release_notes=True),
+               dict(one, release_notes=True, release_notes_repos=["pas un depot"]),
+               dict(one, release_notes=True, release_notes_repos="a/b"),
+               dict(one, release_notes=True, release_notes_repos=["../../x"], advisories=["a/b"]),
+               dict(one, release_notes=True, advisories=["a/b"], release_notes_ignore="npm"),
+               dict(one, release_notes=True, advisories=["a/b"], release_notes_ignore=["("]),
+               dict(one, release_notes=True, advisories=["a/b"], release_notes_ignore=[""]),
+               dict(one, release_notes=True, advisories=["a/b"], release_notes_ignore=["x" * 201]),
+               dict(one, release_notes=True, advisories=["a/b"], release_notes_ignore=[3]),
+               dict(one, release_notes_ignore=["x"]), dict(one, release_notes_repos=["a/b"]),
+               dict(one, release_notes=True, advisories=["a/b"], release_notes_ingore=["x"])]
+        for b in bad:
+            with self.assertRaises(du.ConfigError, msg=str(b)):
+                du.parse_config({"service": [b]})
+
+    def test_example_configs_are_valid(self):
+        root = pathlib.Path(__file__).resolve().parent.parent / "examples"
+        cfg = du.load_config(str(root / "updates.example.toml"))
+        self.assertTrue(any(s.release_notes for s in cfg.services), "l'exemple montre la veille des notes de release")
+        self.assertTrue(any(s.release_notes_ignore for s in cfg.services))
+
+    def test_watchtower_migration_example(self):
+        root = pathlib.Path(__file__).resolve().parent.parent / "examples"
+        cfg = du.load_config(str(root / "updates.watchtower.toml"))
+        by = {s.name: s for s in cfg.services}
+        self.assertEqual({s.mode for s in cfg.services}, {"notify"}, "aucun service en auto sans accord explicite")
+        self.assertNotIn("watchtower", by)
+        tirelire = [s for s in cfg.services if s.group == "tirelire"]
+        self.assertEqual(len(tirelire), 5)
+        self.assertFalse(any(s.rollback for s in tirelire))
+        self.assertEqual(sum(1 for s in tirelire if s.pre_hook), 1)
+        self.assertEqual({s.name for s in cfg.services if s.group == "immich"}, {"immich_server", "immich_machine_learning"})
+        self.assertFalse(any(s.release_notes for s in tirelire), "tirelire : dépôt privé, pas de version")
+        self.assertEqual(sum(1 for s in cfg.services if s.group == "immich" and s.release_notes), 1, "une alerte par release")
+        for n in ("traefik", "homepage", "wg-easy", "pocket-id", "crowdsec", "beszel"):
+            self.assertTrue(by[n].release_notes, n)
+
+
+class TestReleaseNotes(Base):
+    """Cas inspirés des projets suivis (wg-easy, beszel, portainer, traefik, valkey, homepage) : données synthétiques."""
+
+    def setUp(self):
+        super().setUp()
+        self.world.add("traefik", "/stack/traefik", "traefik", "traefik:v3.6", 1, version="v3.7.13")
+
+    def mk(self, version="v3.7.13", repos=("traefik/traefik",), **kw):
+        if version is not None:
+            self.world.labels["id-traefik-old"] = {"org.opencontainers.image.version": version}
+        else:
+            self.world.labels.pop("id-traefik-old", None)
+        svc = self.svc(release_notes=True, release_notes_repos=list(repos), **kw.pop("svc", {}))
+        return self.make([svc], **kw)
+
+    def releases(self, *rels, repo="traefik/traefik", etag="e1"):
+        self.gh_rel[repo] = (200, list(rels), etag)
+
+    def posted(self) -> str:
+        return "\n".join(p[1]["content"] for p in self.posts)
+
+    def test_real_world_cases(self):
+        cases = [
+            # (version en cours, tag, note, alerte forte ?)
+            ("v15.3.0", "v15.4.0", "Improved security of the login form", False),                       # wg-easy
+            ("0.18.0", "v0.19.0", "Security hardening of the agent connection", False),                  # beszel
+            ("2.44.0", "2.45.1", "Fixes CVE-2026-11111, CVE-2026-22222 and CVE-2026-33333", True),       # portainer
+            ("v3.7.13", "v3.7.14", "Fix GHSA-aaaa-bbbb-cccc is not valid but GHSA-qxcr-4rv3-v23r is", True),   # traefik
+            ("8.1.9", "8.1.10", "Security fixes: a crash in the cluster bus", True),                     # valkey
+            ("v2.5.0", "v2.6.0", "Patch for GHSA-qxcr-4rv3-v23r", True),                                 # homepage
+        ]
+        for current, tag, body, strong in cases:
+            with self.subTest(tag=tag):
+                self.posts.clear()
+                self.gh_calls.clear()
+                self.state_path = os.path.join(self.tmp.name, f"state-{tag}.json")
+                self.releases(release(self.clock, tag, body))
+                self.mk(version=current).cycle(apply=True)
+                self.assertEqual(len(self.posts), 1, self.logtext())
+                content = self.posts[0][1]["content"]
+                self.assertIn(f"{current.lstrip('v')} → {tag}" if strong else tag, content)
+                if strong:
+                    self.assertIn("Notes de release à lire", content)
+                    self.assertIn(f"https://github.com/traefik/traefik/releases/tag/{tag}", content)
+                    self.assertIn("Motifs :", content)
+                    self.assertIn("⚠️", content)
+                else:
+                    self.assertIn("Signal faible", content)
+                    self.assertIn("ℹ️", content)
+                    self.assertNotIn("Motifs :", content)
+
+    def test_motifs_are_listed(self):
+        self.releases(release(self.clock, "v3.7.14", "Fixes CVE-2026-1111 (SSRF) and CVE-2026-2222 (path traversal)"))
+        self.mk().cycle(apply=True)
+        c = self.posted()
+        for want in ("CVE-2026-1111", "CVE-2026-2222", "SSRF", "path traversal", "v3.7.13".lstrip("v") + " → v3.7.14"):
+            self.assertIn(want, c)
+
+    def test_no_releases_means_no_alert_and_no_error(self):
+        for resp in ((404, None, ""), (200, [], "e")):
+            with self.subTest(resp=resp):
+                self.gh_rel["traefik/traefik"] = resp
+                u = self.mk()
+                self.assertEqual(u.cycle(apply=True), 0)
+                self.assertEqual(self.posts, [])
+                self.assertNotIn("ERREUR", self.logtext())
+        # dépôt jamais déclaré côté faux serveur (404 par défaut), service sans erreur de vérification
+        self.gh_rel.clear()
+        self.assertEqual(self.mk().cycle(apply=True), 0)
+
+    def test_older_or_equal_releases_are_ignored(self):
+        self.releases(release(self.clock, "v3.7.13", "CVE-2026-1111"), release(self.clock, "v3.7.12", "CVE-2026-2222"),
+                      release(self.clock, "v3.6.99", "CVE-2026-3333"), release(self.clock, "v2.0.0", "GHSA-qxcr-4rv3-v23r"))
+        self.mk().cycle(apply=True)
+        self.assertEqual(self.posts, [])
+
+    def test_one_alert_per_service_and_tag_and_persisted(self):
+        self.releases(release(self.clock, "v3.7.14", "CVE-2026-1111"), release(self.clock, "v3.7.15", "CVE-2026-2222"))
+        u = self.mk()
+        u.cycle(apply=True)
+        self.assertEqual(len(self.posts), 2)
+        u.cycle(apply=True)
+        self.assertEqual(len(self.posts), 2, "pas de répétition")
+        self.clock.days(1)
+        self.mk().cycle(apply=True)                    # nouveau processus : l'état disque dédoublonne
+        self.assertEqual(len(self.posts), 2)
+        self.releases(release(self.clock, "v3.7.16", "CVE-2026-3333"), release(self.clock, "v3.7.15", "CVE-2026-2222"),
+                      release(self.clock, "v3.7.14", "CVE-2026-1111"), etag="e2")
+        self.clock.days(1)
+        self.mk().cycle(apply=True)
+        self.assertEqual(len(self.posts), 3, "seule la nouvelle release est signalée")
+        self.assertIn("v3.7.16", self.posts[2][1]["content"])
+
+    def test_dedup_key_is_per_service(self):
+        self.world.add("traefik2", "/stack/t2", "traefik2", "traefik:v3.6", 1, version="v3.7.13")
+        self.releases(release(self.clock, "v3.7.14", "CVE-2026-1111"))
+        svcs = [self.svc(release_notes=True, release_notes_repos=["traefik/traefik"]),
+                self.svc("traefik2", "/stack/t2", release_notes=True, release_notes_repos=["traefik/traefik"])]
+        self.make(svcs).cycle(apply=True)
+        self.assertEqual(len(self.posts), 2)
+        self.assertEqual(len(self.gh_calls), 1, "un seul appel pour un dépôt partagé")
+
+    def test_drafts_and_prereleases_are_ignored(self):
+        self.releases(release(self.clock, "v3.8.0", "CVE-2026-1111", pre=True), release(self.clock, "v3.9.0", "CVE-2026-2222", draft=True),
+                      release(self.clock, "v3.10.0-rc1", "CVE-2026-3333"), release(self.clock, "v3.11.0-beta.2", "CVE-2026-4444", pre=True))
+        self.mk().cycle(apply=True)
+        self.assertEqual(self.posts, [])
+
+    def test_unreadable_release_tags_are_skipped(self):
+        self.releases(release(self.clock, "nightly", "CVE-2026-1111"), release(self.clock, "release-3.8.0", "CVE-2026-2222"),
+                      release(self.clock, "latest", "CVE-2026-3333"))
+        self.assertEqual(self.mk().cycle(apply=True), 0)
+        self.assertEqual(self.posts, [])
+
+    def test_unreadable_current_version_alerts_once_and_scans_nothing(self):
+        self.releases(release(self.clock, "v9.9.9", "CVE-2026-1111"))
+        for label in ("latest", "main", "18-vectorchord0.5.3", None, "garbage"):
+            with self.subTest(label=label):
+                self.posts.clear()
+                self.gh_calls.clear()
+                self.state_path = os.path.join(self.tmp.name, f"state-{label}.json")
+                u = self.mk(version=label)
+                u.cycle(apply=True)
+                u.cycle(apply=True)
+                self.assertEqual(len(self.posts), 1)
+                self.assertIn("Impossible de comparer", self.posts[0][1]["content"])
+                self.assertNotIn("CVE-2026-1111", self.posted())
+                self.assertEqual(self.gh_calls, [], "aucune requête quand la version ne peut pas être comparée")
+
+    def test_never_accelerates_or_applies(self):
+        self.new_remote(n=2)
+        self.world.digest_versions[dg(2)] = "v3.7.14"
+        self.releases(release(self.clock, "v3.7.14", "Security fix: CVE-2026-1111 GHSA-qxcr-4rv3-v23r critical RCE"))
+        u = self.mk(svc={"cooldown": "3d", "window": "02:00-05:00"})
+        self.minutes = 600                                          # hors fenêtre
+        u.cycle(apply=True)
+        self.assertEqual(self.world.ups, [])
+        self.assertEqual(self.cmds(["docker", "pull"]), [], "aucune image n'est tirée pour une note de release")
+        self.assertIn("différée — encore 3 j", self.logtext())
+        self.clock.days(2)
+        self.minutes = 180
+        u.cycle(apply=True)
+        self.assertEqual(self.world.ups, [], "en fenêtre, délai non écoulé : toujours rien")
+        self.assertEqual(self.cmds(["docker", "pull"]), [])
+        rec = u.state.get("traefik:v3.6")
+        self.assertEqual(rec["first_seen"], 1_000_000, "le compteur de délai n'est pas modifié")
+        self.assertEqual(len(self.posts), 1, "une alerte, pas de mise à jour")
+        self.clock.days(1.1)                                        # le délai NORMAL s'écoule : seul lui déclenche
+        u.cycle(apply=True)
+        self.assertEqual(len(self.world.ups), 1)
+
+    def test_ignore_patterns(self):
+        self.releases(release(self.clock, "v3.7.14", "Bump deps (npm audit: 3 vulnerabilities)"))
+        self.mk(svc={"release_notes_ignore": ["npm audit"]}).cycle(apply=True)
+        self.assertEqual(self.posts, [])
+        self.state_path = os.path.join(self.tmp.name, "other.json")
+        self.mk(svc={"release_notes_ignore": ["PAS-LA"]}).cycle(apply=True)
+        self.assertEqual(len(self.posts), 1, "un motif d'exclusion sans rapport ne masque rien")
+
+    def test_ignore_is_case_insensitive_and_hides_only_matching_hits(self):
+        self.releases(release(self.clock, "v3.7.14", "Dependencies: NPM Audit reports vulnerabilities. " + "x " * 100 +
+                              "Also fixes CVE-2026-7777 in the router."))
+        self.mk(svc={"release_notes_ignore": ["npm audit"]}).cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn("CVE-2026-7777", self.posted())
+        self.assertNotIn("vulnerabilit", self.posted().lower().split("lien")[0].split("motifs")[1])
+
+    def test_ignore_can_silence_the_weak_signal_too(self):
+        self.releases(release(self.clock, "v3.7.14", "Improved security of the admin page"))
+        self.mk(svc={"release_notes_ignore": ["admin page"]}).cycle(apply=True)
+        self.assertEqual(self.posts, [])
+
+    def test_strong_release_has_no_extra_info_alert(self):
+        self.releases(release(self.clock, "v3.7.14", "This security fix improves security."))
+        self.mk().cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn("Notes de release à lire", self.posted())
+
+    def test_weak_signals_are_grouped_and_deduplicated(self):
+        self.releases(release(self.clock, "v3.7.14", "better security"), release(self.clock, "v3.7.15", "more security"))
+        u = self.mk()
+        u.cycle(apply=True)
+        self.assertEqual(len(self.posts), 1, "un seul message groupé")
+        self.assertIn("v3.7.14", self.posted())
+        self.assertIn("v3.7.15", self.posted())
+        u.cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+        self.releases(release(self.clock, "v3.7.16", "yet more security"), release(self.clock, "v3.7.15", "more security"),
+                      release(self.clock, "v3.7.14", "better security"), etag="e2")
+        self.clock.days(1)
+        u.cycle(apply=True)
+        self.assertEqual(len(self.posts), 2)
+        self.assertIn("v3.7.16", self.posts[1][1]["content"])
+        self.assertNotIn("v3.7.14", self.posts[1][1]["content"], "les releases déjà signalées ne reviennent pas")
+
+    def test_a_release_edited_from_weak_to_strong_is_alerted(self):
+        self.releases(release(self.clock, "v3.7.14", "better security"))
+        u = self.mk()
+        u.cycle(apply=True)
+        self.releases(release(self.clock, "v3.7.14", "better security, fixes CVE-2026-1111"), etag="e2")
+        self.clock.days(1)
+        u.cycle(apply=True)
+        self.assertEqual(len(self.posts), 2)
+        self.assertIn("CVE-2026-1111", self.posts[1][1]["content"])
+
+    def test_untrusted_notes_cannot_inject(self):
+        evil = "@everyone <@&123456> @here\n**URGENT** ```rm -rf /``` \x00\x1b[31m CVE-2026-1111 " + "z" * 900
+        self.releases(release(self.clock, "v3.7.14", evil, name="@everyone"))
+        self.mk().cycle(apply=True)
+        p = self.posts[0][1]
+        self.assertEqual(p["allowed_mentions"], {"parse": []})
+        self.assertLessEqual(len(p["content"]), du.DISCORD_MAX)
+        self.assertNotIn("@everyone", p["content"])
+        self.assertNotIn("@here", p["content"])
+        self.assertNotIn("\x1b", p["content"] + self.logtext())
+        self.assertNotIn("evil.example", p["content"] + self.logtext(), "le lien est reconstruit, jamais copié")
+        self.assertEqual(p["content"].count("Extrait"), 1)
+        extrait = next(l for l in p["content"].split("\n") if l.startswith("Extrait"))
+        self.assertLessEqual(len(extrait), 200)
+
+    def test_check_logs_but_sends_nothing(self):
+        self.releases(release(self.clock, "v3.7.14", "Fixes CVE-2026-1111"))
+        u = self.mk()
+        self.assertEqual(u.cycle(apply=False), 0)
+        self.assertEqual(self.posts, [])
+        self.assertIn("notes de release traefik: version détectée v3.7.13", self.logtext())
+        self.assertIn("ALERTE notes de release", self.logtext())
+        self.assertEqual(u.state.data["alerts"], {}, "check n'engage aucune alerte")
+        self.mk(version=None).cycle(apply=False)
+        self.assertIn("version NON détectée", self.logtext())
+
+    def test_api_failure_never_blocks_normal_updates(self):
+        self.new_remote(n=2)
+        for resp in ((500, None, ""), (0, None, ""), (403, None, "")):
+            with self.subTest(resp=resp):
+                self.world.ups.clear()
+                self.world.containers[("/stack/traefik", "traefik")]["image_id"] = "id-traefik-old"
+                self.world.tags["traefik:v3.6"] = "id-traefik-old"
+                self.state_path = os.path.join(self.tmp.name, f"s{resp[0]}.json")
+                self.gh_rel["traefik/traefik"] = resp
+                u = self.mk(svc={"cooldown": "0"})
+                self.assertEqual(u.cycle(apply=True), 0)
+                self.assertEqual(len(self.world.ups), 1, "la mise à jour normale a eu lieu")
+                self.assertIn("injoignable", self.logtext())
+                self.assertEqual(self.posts and "Notes de release" in self.posted(), False)
+
+    def test_rate_limit_waits_the_whole_interval_and_keeps_old_items(self):
+        self.releases(release(self.clock, "v3.7.14", "Fixes CVE-2026-1111"))
+        u = self.mk()
+        u.cycle(apply=True)
+        self.clock.days(2 / 24)
+        self.gh_rel["traefik/traefik"] = (403, None, "")
+        u.cycle(apply=True)
+        n = len(self.gh_calls)
+        u.cycle(apply=True)
+        self.assertEqual(len(self.gh_calls), n, "après un 403, pas de nouvelle requête avant advisory_poll")
+        self.assertEqual(len(u.state.data["releases"]["traefik/traefik"]["items"]), 1, "anciennes releases conservées")
+        self.clock.days(2 / 24)
+        u.cycle(apply=True)
+        self.assertEqual(len(self.gh_calls), n + 1)
+
+    def test_404_is_cached_for_the_poll_interval(self):
+        self.gh_rel["traefik/traefik"] = (404, None, "")
+        u = self.mk()
+        u.cycle(apply=True)
+        u.cycle(apply=True)
+        self.assertEqual(len(self.gh_calls), 1)
+        self.assertNotIn("injoignable", self.logtext())
+        self.clock.days(2 / 24)
+        u.cycle(apply=True)
+        self.assertEqual(len(self.gh_calls), 2)
+
+    def test_poll_interval_etag_url_and_shared_cache(self):
+        self.releases(release(self.clock, "v3.7.14", "better security"))
+        u = self.mk()
+        u.cycle(apply=True)
+        u.cycle(apply=True)
+        self.assertEqual(len(self.gh_calls), 1)
+        self.assertEqual(self.gh_calls[0][0], "https://api.github.com/repos/traefik/traefik/releases?per_page=30")
+        self.clock.days(2 / 24)
+        u.cycle(apply=True)
+        self.assertEqual(self.gh_calls[1][2], "e1", "requête conditionnelle (ETag)")
+        self.assertEqual(len(u.state.data["releases"]["traefik/traefik"]["items"]), 1)
+        self.assertEqual(len(self.posts), 1, "un 304 ne ré-émet rien")
+
+    def test_repo_defaults_to_advisories(self):
+        self.gh_rel["traefik/traefik"] = (200, [release(self.clock, "v3.7.14", "CVE-2026-1111")], "e")
+        self.gh["traefik/traefik"] = (200, [], "a")
+        self.world.labels["id-traefik-old"] = {"org.opencontainers.image.version": "v3.7.13"}
+        self.make([self.svc(advisories=["traefik/traefik"], release_notes=True)]).cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+
+    def test_release_notes_are_off_by_default(self):
+        self.releases(release(self.clock, "v3.7.14", "CVE-2026-1111"))
+        self.world.labels["id-traefik-old"] = {"org.opencontainers.image.version": "v3.7.13"}
+        self.make([self.svc(advisories=["traefik/traefik"])]).cycle(apply=True)
+        self.assertEqual([c for c in self.gh_calls if "/releases" in c[0]], [])
+        self.assertEqual([p for p in self.posts if "Notes de release" in p[1]["content"]], [])
+
+    def test_token_is_sent_but_never_logged(self):
+        tf = os.path.join(self.tmp.name, "gh_token")
+        with open(tf, "w") as f:
+            f.write("jeton-SUPER-SECRET\n")
+        self.releases(release(self.clock, "v3.7.14", "CVE-2026-1111"))
+        u = self.mk(settings={"github_token_file": tf})
+        u.cycle(apply=True)
+        self.assertEqual(self.gh_calls[0][1], "jeton-SUPER-SECRET")
+        self.assertNotIn("SUPER-SECRET", self.logtext() + self.posted() + json.dumps(u.state.data))
+        self.assertNotIn("discord.test", self.logtext(), "l'URL du webhook n'est jamais journalisée")
+
+    def test_state_keeps_only_compact_data(self):
+        self.releases(release(self.clock, "v3.7.14", "Fixes CVE-2026-1111. " + "blabla " * 5000))
+        u = self.mk()
+        u.cycle(apply=True)
+        self.assertLess(len(json.dumps(u.state.data["releases"])), 2000)
+        self.assertNotIn("blabla " * 20, json.dumps(u.state.data), "seul l'extrait court est conservé")
+
+    def test_notify_mode_and_unknown_status_services(self):
+        self.releases(release(self.clock, "v3.7.14", "CVE-2026-1111"))
+        self.mk(svc={"mode": "notify"}).cycle(apply=True)
+        self.assertEqual(len(self.posts), 1)
+        self.posts.clear(); self.gh_calls.clear()
+        u = self.mk(svc={"mode": "notify"})
+        u.state.data["holds"].append("traefik")                     # en pause : ignoré, aucune requête
+        u.cycle(apply=True)
+        self.assertEqual(self.gh_calls, [])
+
+    def test_absent_container_is_skipped(self):
+        self.releases(release(self.clock, "v3.7.14", "CVE-2026-1111"))
+        u = self.make([self.svc("ghost", "/stack/ghost", release_notes=True, release_notes_repos=["traefik/traefik"])])
+        self.assertEqual(u.cycle(apply=True), 0)
+        self.assertEqual((self.gh_calls, self.posts), ([], []))
+
+    def test_simulation_changes_nothing(self):
+        self.releases(release(self.clock, "v3.7.14", "CVE-2026-1111"))
+        u = self.mk(dry_run=True, persist=False)
+        u.cycle(apply=True)
+        self.assertEqual(self.posts, [])
+        self.assertFalse(os.path.exists(self.state_path))
+
+
+class TestReleaseBodyLimit(unittest.TestCase):
+    """Les notes de projets comme Node.js dépassent 2 Mio : la liste des releases a une limite de lecture plus large."""
+
+    def test_releases_endpoint_accepts_large_bodies(self):
+        import http.server
+        import threading
+        big = json.dumps([{"tag_name": "v1.0.0", "body": "x" * (3 << 20)}]).encode()
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(big)))
+                self.end_headers()
+                self.wfile.write(big)
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        code, body, _ = du.github_get(base + "/repos/a/b/releases?per_page=30")
+        self.assertEqual(code, 200)
+        self.assertEqual(body[0]["tag_name"], "v1.0.0")
+        self.assertEqual(du.github_get(base + "/repos/a/b/security-advisories?per_page=50")[0], 0,
+                         "la limite des avis reste de 2 Mio")
 
 
 if __name__ == "__main__":

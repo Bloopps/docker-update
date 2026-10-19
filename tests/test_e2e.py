@@ -213,5 +213,130 @@ security_cooldown = "0"
         self.assertEqual(self.image(), "id-old", "sans avis, le délai normal s'applique")
 
 
+class ReleaseNotes(E2E):
+    """Notes de release servies par un vrai serveur HTTP local ; le webhook est un second endpoint du même serveur."""
+
+    def serve(self, releases, code=200):
+        self.gets, self.posts = [], []
+        body = json.dumps(releases).encode()
+        outer = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                outer.gets.append(self.path)
+                if "/releases" not in self.path:
+                    return self._reply(404, b"{}")
+                self._reply(code, body if code == 200 else b"{}")
+
+            def do_POST(self):
+                outer.posts.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                self._reply(204, b"")
+
+            def _reply(self, status, data):
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def cfg_with(self, api, cooldown="3d", extra=""):
+        hook = pathlib.Path(self.tmp.name) / "webhook"
+        hook.write_text(api + "/hook/SECRET-TOKEN\n")
+        self.cfg.write_text(f'''[settings]
+state_file = "{self.state}"
+lock_file = "{self.tmp.name}/lock"
+settle_seconds = 0
+github_api = "{api}"
+notify_url_file = "{hook}"
+[[service]]
+name = "traefik"
+compose_dir = "{self.dir}"
+service = "traefik"
+mode = "auto"
+cooldown = "{cooldown}"
+release_notes = true
+release_notes_repos = ["acme/proxy"]
+{extra}
+''')
+
+    @staticmethod
+    def rel(tag, body, **kw):
+        when = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=3)).isoformat()
+        return {"tag_name": tag, "body": body, "published_at": when, "prerelease": False, "draft": False, **kw}
+
+    def test_alert_is_sent_once_and_nothing_is_applied(self):
+        api = self.serve([self.rel("v3.6.3", "Fixes CVE-2026-12345 and a path traversal"),
+                          self.rel("v3.6.1", "CVE-2020-0001 (older than the running version)"),
+                          self.rel("v3.7.0-rc1", "CVE-2026-9999", prerelease=True)])
+        self.write_world(remote=2, old_version="3.6.2", new_version="3.6.3")
+        self.cfg_with(api)
+        r = self.du("run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.gets, ["/repos/acme/proxy/releases?per_page=30"])
+        self.assertEqual(len(self.posts), 1, r.stdout)
+        content = self.posts[0]["content"]
+        for want in ("3.6.2 → v3.6.3", "CVE-2026-12345", "path traversal", "https://github.com/acme/proxy/releases/tag/v3.6.3"):
+            self.assertIn(want, content)
+        self.assertNotIn("CVE-2020-0001", content)
+        self.assertEqual(self.posts[0]["allowed_mentions"], {"parse": []})
+        self.assertEqual(self.image(), "id-old", "une note de release n'accélère rien : délai de 3 jours en cours")
+        self.assertEqual([c for c in self.world()["log"] if c[:1] == ["pull"]], [])
+        self.assertNotIn("SECRET-TOKEN", r.stdout + r.stderr)
+        r = self.du("run")                                    # nouveau processus : l'état disque dédoublonne
+        self.assertEqual(len(self.posts), 1)
+        with open(self.state) as f:
+            st = json.load(f)
+        self.assertIn("release:traefik:v3.6.3", st["alerts"])
+        self.assertEqual(len(st["releases"]["acme/proxy"]["items"]), 3)
+
+    def test_check_reports_but_sends_nothing(self):
+        api = self.serve([self.rel("v3.6.3", "Fixes CVE-2026-12345")])
+        self.write_world(remote=2, old_version="3.6.2")
+        self.cfg_with(api)
+        r = self.du("check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("notes de release traefik: version détectée 3.6.2", r.stdout)
+        self.assertIn("ALERTE notes de release", r.stdout)
+        self.assertEqual(self.posts, [])
+
+    def test_missing_repository_and_unreachable_api_are_not_errors(self):
+        for code, api in ((404, None), (500, None), (200, "http://127.0.0.1:9")):
+            with self.subTest(code=code):
+                api = api or self.serve([], code=code)
+                self.write_world(remote=2, old_version="3.6.2")
+                self.cfg_with(api, cooldown="0")
+                r = self.du("run")
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(self.image(), "id-" + dig(2)[7:19], "la mise à jour normale n'est jamais empêchée")
+                self.assertNotIn("ERREUR", r.stdout)
+                self.state.unlink(missing_ok=True)
+
+    def test_unreadable_version_gives_one_alert_and_no_request(self):
+        api = self.serve([self.rel("v3.6.3", "Fixes CVE-2026-12345")])
+        self.write_world(remote=2)                            # image sans étiquette de version
+        self.cfg_with(api)
+        self.du("run")
+        self.du("run")
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn("Impossible de comparer", self.posts[0]["content"])
+        self.assertEqual(self.gets, [])
+
+    def test_validate_refuses_unknown_and_incomplete_release_keys(self):
+        self.write_cfg("0", "release_notes = true")           # aucun dépôt à lire
+        r = self.du("validate")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("release_notes", r.stdout)
+        self.write_cfg("0", "release_note = true")            # faute de frappe
+        self.assertEqual(self.du("validate").returncode, 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

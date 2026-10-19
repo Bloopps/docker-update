@@ -28,9 +28,18 @@ advisory_lookback = "30d"                            # on ignore les avis plus a
 # que l'image candidate (version lue dans ses étiquettes) n'est plus touchée, le délai de 3 jours est ramené à
 # security_cooldown (défaut 6 h, compté depuis la plus tardive de la 1re observation et de la publication de l'avis).
 # Un avis « critical » ignore aussi la fenêtre horaire. Tout cas ambigu = alerte Discord seulement.
+#
+# Veille des NOTES DE RELEASE (`release_notes = true`, désactivée par défaut) : beaucoup de projets corrigent des failles
+# sans publier d'avis. L'outil lit les 30 dernières releases du dépôt (`release_notes_repos`, à défaut `advisories`),
+# ne garde que celles plus récentes que la version en cours, et cherche des motifs stricts (CVE-…, GHSA-…, « security fix »,
+# RCE, XSS, path traversal…). ALERTE SEULEMENT : une note de release est un texte non fiable, elle n'accélère jamais rien.
+# Le mot « security » seul est un signal faible (alerte d'information groupée). `release_notes_ignore` : expressions
+# régulières (insensibles à la casse) qui écartent les extraits bruyants, ex. ["npm audit", "dependabot"].
+# La version en cours est lue dans l'étiquette d'image `version_label` ; sinon : une seule alerte « impossible de comparer ».
 [[service]]
 name         = "traefik"
 advisories   = ["traefik/traefik"]
+release_notes = true
 compose_dir  = "/home/ubuntu/traefik"
 service      = "traefik"
 mode         = "auto"
@@ -40,6 +49,8 @@ smoke_expect = [302, 401, 403]
 [[service]]
 name         = "pocket-id"
 advisories   = ["pocket-id/pocket-id"]
+release_notes = true
+release_notes_ignore = ["dependabot", "bump .* from"]   # exemple : écarte le bruit des mises à jour de dépendances
 compose_dir  = "/home/ubuntu/pocket-id"
 service      = "pocket-id"
 mode         = "auto"
