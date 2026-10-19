@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -649,5 +651,174 @@ func TestValidateOnlineChecksTheGitHubRepos(t *testing.T) {
 	r.must("AVERTISSEMENT : dépôt limit/repo non vérifié (réponse HTTP 403")
 	if strings.Contains(r.out.String()+r.errOut.String(), "ghp_secret") {
 		t.Fatal("le jeton ne doit jamais être journalisé")
+	}
+}
+
+// stubEditor remplace l'éditeur : chaque appel applique la fonction suivante au contenu du fichier temporaire.
+func (r *rig) stubEditor(steps ...func(string) string) *int {
+	n := 0
+	r.env.Edit = func(path string) error {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+			r.t.Fatalf("la copie en édition doit être en 600 : %v", info.Mode())
+		}
+		step := steps[min(n, len(steps)-1)]
+		n++
+		return os.WriteFile(path, []byte(step(string(b))), 0o600)
+	}
+	return &n
+}
+
+func TestEditAppliesTheEditedFile(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+	r := newEditRig(t)
+	before := r.read()
+	r.stubEditor(func(s string) string { return strings.Replace(s, `/srv/web"`, `/srv/web2"`, 1) })
+	if code := r.run("edit", "--yes"); code != 0 {
+		t.Fatalf("code %d\n%s%s", code, r.out, r.errOut)
+	}
+	if got := r.read(); got != strings.Replace(before, `/srv/web"`, `/srv/web2"`, 1) {
+		t.Fatalf("fichier :\n%s", got)
+	}
+	if len(r.backups()) != 1 {
+		t.Fatalf("sauvegardes = %v", r.backups())
+	}
+	r.must(`-compose_dir = "/srv/web"`)
+	r.must(`+compose_dir = "/srv/web2"`)
+	if m, _ := filepath.Glob(filepath.Join(tmpRoot, "docker-update-edit-*")); len(m) != 0 {
+		t.Fatalf("copie temporaire laissée : %v", m)
+	}
+}
+
+func TestEditRefusesInvalidResultsAndOffersToReopen(t *testing.T) {
+	r := newEditRig(t)
+	before := r.read()
+	bad := func(s string) string { return strings.Replace(s, `mode        = "notify"`, `mode        = "oups"`, 1) }
+	// invalide, refus de rouvrir : rien n'est écrit
+	calls := r.stubEditor(bad)
+	r.env.Stdin = strings.NewReader("n\n")
+	if code := r.run("edit", "--yes"); code != 1 || r.read() != before || len(r.backups()) != 0 {
+		t.Fatalf("code %d", code)
+	}
+	r.must("invalide")
+	if *calls != 1 {
+		t.Fatalf("éditeur ouvert %d fois", *calls)
+	}
+	// invalide, puis corrigé à la réouverture
+	r.fresh()
+	fixed := func(s string) string { return strings.Replace(s, `mode        = "oups"`, `mode        = "manual"`, 1) }
+	calls = r.stubEditor(bad, fixed)
+	r.env.Stdin = strings.NewReader("o\n")
+	if code := r.run("edit", "--yes"); code != 0 {
+		t.Fatalf("code %d\n%s%s", code, r.out, r.errOut)
+	}
+	if *calls != 2 || !strings.Contains(r.read(), `mode        = "manual"`) || strings.Contains(r.read(), "oups") {
+		t.Fatalf("appels %d, fichier :\n%s", *calls, r.read())
+	}
+}
+
+func TestEditNoChangeDryRunDeclineAndEditorFailure(t *testing.T) {
+	r := newEditRig(t)
+	before := r.read()
+	r.stubEditor(func(s string) string { return s })
+	if code := r.run("edit", "--yes"); code != 0 || len(r.backups()) != 0 {
+		t.Fatalf("sans changement : code %d", code)
+	}
+	r.must("aucun changement")
+	r.fresh()
+	r.stubEditor(func(s string) string { return s + "\n# note\n" })
+	if code := r.run("--dry-run", "edit", "--yes"); code != 0 || r.read() != before {
+		t.Fatalf("simulation : code %d", code)
+	}
+	r.must("[simulation]")
+	r.fresh()
+	r.env.Stdin = strings.NewReader("")
+	if code := r.run("edit"); code != 1 || r.read() != before {
+		t.Fatalf("sans confirmation : code %d", code)
+	}
+	r.fresh()
+	r.env.Edit = func(string) error { return errors.New("boom") }
+	if code := r.run("edit", "--yes"); code != 1 || r.read() != before {
+		t.Fatalf("éditeur en échec : code %d", code)
+	}
+	r.must("rien n'est écrit")
+}
+
+func TestEditRefusesWhenTheFileChangedMeanwhile(t *testing.T) {
+	r := newEditRig(t)
+	other := strings.Replace(r.read(), `mode        = "notify"`, `mode        = "manual"`, 1)
+	r.env.Edit = func(path string) error {
+		if err := os.WriteFile(r.cfg, []byte(other), 0o640); err != nil { // quelqu'un d'autre écrit pendant l'édition
+			return err
+		}
+		return os.WriteFile(path, []byte("[settings]\n"), 0o600)
+	}
+	if code := r.run("edit", "--yes"); code != 1 || r.read() != other || len(r.backups()) != 0 {
+		t.Fatalf("code %d", code)
+	}
+	r.must("a changé pendant l'édition")
+}
+
+func TestEditorIsChosenFromTheEnvironmentWithoutAShell(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "log")
+	script := filepath.Join(dir, "editor.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"$# $1 $2\" > "+logPath+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ visual, editor, want string }{
+		{"", script + " --flag", "2 --flag /cible"},
+		{script + " -w", script + " --ignore", "2 -w /cible"}, // VISUAL passe avant EDITOR
+		{script, "", "1 /cible "},
+		{"$(touch " + filepath.Join(dir, "pwned") + ")", "", ""}, // aucun shell : jamais interprété
+	} {
+		os.Remove(logPath)
+		e := &Env{Getenv: func(k string) string { return map[string]string{"VISUAL": tc.visual, "EDITOR": tc.editor}[k] }}
+		e.fill()
+		err := e.runEditor("/cible")
+		got, _ := os.ReadFile(logPath)
+		if tc.want == "" {
+			if err == nil {
+				t.Fatal("un « éditeur » inexistant doit échouer")
+			}
+			if _, err := os.Stat(filepath.Join(dir, "pwned")); err == nil {
+				t.Fatal("la variable a été exécutée par un shell")
+			}
+			continue
+		}
+		if err != nil || strings.TrimSpace(string(got)) != strings.TrimSpace(tc.want) {
+			t.Fatalf("%+v : %v %q", tc, err, got)
+		}
+	}
+}
+
+func TestExport(t *testing.T) {
+	r := newEditRig(t)
+	if code := r.run("export"); code != 0 {
+		t.Fatalf("code %d\n%s", code, r.errOut)
+	}
+	var got struct {
+		Settings map[string]any   `json:"settings"`
+		Services []map[string]any `json:"services"`
+	}
+	if err := json.Unmarshal([]byte(r.out.String()), &got); err != nil {
+		t.Fatalf("JSON invalide : %v\n%s", err, r.out)
+	}
+	if len(got.Services) != 4 || got.Services[1]["name"] != "app-db" || got.Services[1]["unit"] != "app" ||
+		got.Services[1]["cooldown_seconds"] != float64(86400) || got.Services[0]["cooldown_seconds"] != float64(3*86400) {
+		t.Fatalf("services : %v", got.Services)
+	}
+	if got.Settings["registry_tool"] != "buildx" || got.Settings["default_cooldown_seconds"] != float64(3*86400) {
+		t.Fatalf("réglages : %v", got.Settings)
+	}
+	if strings.Contains(r.out.String(), "null") {
+		t.Fatalf("les listes vides doivent être [] :\n%s", r.out)
+	}
+	if len(*r.calls) != 0 {
+		t.Fatalf("export ne lance aucune commande : %v", *r.calls)
 	}
 }

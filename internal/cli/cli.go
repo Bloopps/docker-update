@@ -56,6 +56,8 @@ type Env struct {
 	Dial    func(addr string) error
 	// Load relit la configuration écrite par add / delete (défaut : config.Load).
 	Load func(path string) (*config.Config, error)
+	// Edit ouvre un fichier dans l'éditeur de l'utilisateur pour `edit` (défaut : $VISUAL, $EDITOR, vi).
+	Edit func(path string) error
 	// GHGet lit l'API GitHub pour `validate --online` (défaut : github.Get).
 	GHGet github.GetFunc
 	// Now donne l'heure (nom des sauvegardes) ; défaut : time.Now.
@@ -135,6 +137,9 @@ func (e *Env) fill() {
 	}
 	if e.Load == nil {
 		e.Load = config.Load
+	}
+	if e.Edit == nil {
+		e.Edit = e.runEditor
 	}
 	if e.GHGet == nil {
 		e.GHGet = github.Get
@@ -226,6 +231,10 @@ func execute(g globals, cmd string, sub subArgs, env *Env, log func(string)) (in
 		return 0, nil
 	case "add":
 		return addCmd(env, g, sub, cfg, log)
+	case "edit":
+		return editCmd(env, g, sub, cfg, log)
+	case "export":
+		return exportCmd(env, cfg, log)
 	case "rename":
 		return renameCmd(env, g, sub, cfg, log)
 	case "delete":

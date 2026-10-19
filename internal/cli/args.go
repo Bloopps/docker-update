@@ -126,6 +126,8 @@ var subcommands = map[string]subSpec{
 	"version":     {},
 	"list":        {},
 	"init":        {flags: []string{"--yes", "--check", "--force", "--skip-checks"}, valued: []string{"--mode", "--include", "--exclude"}},
+	"edit":        {flags: []string{"--yes"}},
+	"export":      {},
 	"rename":      {names: "+", flags: []string{"--group", "--yes"}},
 	"delete":      {names: "*", flags: []string{"--keep-state", "--yes"}, valued: []string{"--group"}},
 	"add": {names: "1", flags: []string{"--release-notes", "--yes", "--first"}, optBool: []string{"--cleanup"},
@@ -134,7 +136,7 @@ var subcommands = map[string]subSpec{
 			"--release-notes-repos", "--release-notes-ignore", "--smoke-url", "--smoke-expect", "--after"}},
 }
 
-var commandOrder = []string{"validate", "check", "run", "now", "hold", "unhold", "status", "notify-test", "set-webhook", "init", "list", "add", "rename", "delete", "version"}
+var commandOrder = []string{"validate", "check", "run", "now", "hold", "unhold", "status", "notify-test", "set-webhook", "init", "list", "add", "rename", "edit", "export", "delete", "version"}
 
 type subArgs struct {
 	names  []string
@@ -227,6 +229,8 @@ Commandes :
   list                tableau des services configurés (lecture seule)
   add NOM [options]   ajoute un service au fichier de configuration (aperçu, confirmation, sauvegarde, validation)
   rename ANCIEN NOUVEAU  renomme un service (ou --group : un groupe) dans le fichier et dans l'état
+  edit                ouvre la configuration dans $EDITOR ; validation, aperçu, confirmation et sauvegarde avant d'écrire
+  export              écrit la configuration effective (défauts appliqués) en JSON sur la sortie standard
   delete NOM...       retire des services du fichier (ou --group G) ; ne touche à aucun conteneur ni image
   version             affiche la version
 
