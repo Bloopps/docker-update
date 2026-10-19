@@ -21,7 +21,7 @@ aucun changement de comportement pendant le portage (phases 0 à 6). En cas de d
 | 2 | `tomlmini` + `config` (clés supprimées, groupes, `examples/`) + fuzz | fait |
 | 3 | `state`, `notify` (Notifier, Report, webhook), `github`, `smoke`, `dockerx` | fait |
 | 4 | `updater` (evaluate, security, release notes, apply, cleanup, cycle, now, select, status) + `fakeworld` | fait |
-| 5 | `cli` + `main`, parité bout en bout (`DU_BIN`), test différentiel | à faire |
+| 5 | `cli` + `main`, parité bout en bout (`DU_BIN`), test différentiel | fait |
 | 6 | Bascule : suppression du Python, docs, unité systemd, mutation manuelle | à faire |
 | 7 | `init`, `add`, `delete`, `list` | à faire |
 
@@ -71,7 +71,9 @@ Contrôles de parité de la phase 2 (scripts jetables, non conservés dans le d�
 21. **`RepoDigests` qui n'est pas une liste de chaînes** : les éléments qui ne sont pas des chaînes sont ignorés (Python lèverait une exception sur un entier). Docker renvoie toujours une liste de chaînes.
 22. **Blancs et découpage** : `str.strip()` et `str.split()` de Python sont reproduits (`textutil.Strip`, `textutil.Fields` : blancs Unicode plus `\x1c` à `\x1f`), ainsi que `s[:n]` en caractères (`textutil.Truncate`, `textutil.Slice`).
 23. **Fichier du jeton GitHub** : lu en octets (un octet UTF-8 invalide ne fait pas lever d'exception comme en Python) ; toujours jamais journalisé.
-24. **Erreurs** : `Cycle`, `NowCmd` et `Hold` renvoient `(code, erreur)` au lieu de lever `UpdateError` ; la sortie du programme (phase 5) en fera le même code 1.
+24. **Erreurs** : `Cycle`, `NowCmd` et `Hold` renvoient `(code, erreur)` au lieu de lever `UpdateError` ; `cli.Main` en fait le même code 1.
+25. **POST ntfy** : `urllib` ajoute `Content-Type: application/x-www-form-urlencoded` à tout POST ; Go n'envoie aucun type pour le corps texte de ntfy (sans effet côté serveur). Le test différentiel ignore cet en-tête.
+26. **Commande `version`** : nouvelle (le Python n'en a pas, et la refuse) ; elle affiche `docker-update <version> GOOS/GOARCH goX`, la version étant injectée par `-ldflags -X main.version`.
 
 ## 4. Inventaire des tests : Python → Go
 
@@ -132,7 +134,7 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestInfra | `test_notifier_discord_payload_and_secret_never_logged` | 3 | internal/notify : `TestNotifierDiscordPayloadAndSecretNeverLogged` | fait |
 | test_docker_update.py | TestInfra | `test_notifier_without_url_and_other_formats` | 3 | internal/notify : `TestNotifierWithoutURLAndOtherFormats` | fait |
 | test_docker_update.py | TestInfra | `test_http_status_unreachable` | 3 | internal/smoke : `TestStatusUnreachable` | fait |
-| test_docker_update.py | TestInfra | `test_validate` | 5 | internal/cli | à faire |
+| test_docker_update.py | TestInfra | `test_validate` | 5 | internal/cli : `TestValidate` | fait |
 | test_docker_update.py | TestSecurityProperties | `test_compose_config_content_is_never_logged` | 4 | internal/updater : `TestSecurityProperties_ComposeConfigContentIsNeverLogged` | fait |
 | test_docker_update.py | TestSecurityProperties | `test_commands_never_use_a_shell` | 4 | internal/updater : `TestSecurityProperties_CommandsNeverUseAShell` | fait |
 | test_docker_update.py | TestSecurityProperties | `test_pull_is_by_digest_of_the_evaluated_image` | 4 | internal/updater : `TestSecurityProperties_PullIsByDigestOfTheEvaluatedImage` | fait |
@@ -173,12 +175,12 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestGithubGet | `test_ok_headers_and_etag` | 3 | internal/github : `TestGetOKHeadersAndEtag` | fait |
 | test_docker_update.py | TestGithubGet | `test_token_and_conditional_request` | 3 | internal/github : `TestGetTokenAndConditionalRequest` | fait |
 | test_docker_update.py | TestGithubGet | `test_errors` | 3 | internal/github : `TestGetErrors` | fait |
-| test_docker_update.py | TestMain | `test_check_and_run_pass_their_names_and_options_on` | 5 | internal/cli | à faire |
-| test_docker_update.py | TestMain | `test_validate_and_status_and_hold` | 5 | internal/cli | à faire |
-| test_docker_update.py | TestMain | `test_notify_test_command` | 5 | internal/cli | à faire |
-| test_docker_update.py | TestMain | `test_bad_config_exit_code_2` | 5 | internal/cli | à faire |
-| test_docker_update.py | TestMain | `test_lock_prevents_concurrent_runs` | 5 | internal/cli | à faire |
-| test_docker_update.py | TestMain | `test_untrusted_config_refused_as_root` | 5 | internal/cli | à faire |
+| test_docker_update.py | TestMain | `test_check_and_run_pass_their_names_and_options_on` | 5 | internal/cli : `TestCheckAndRunPassTheirNamesAndOptionsOn` | fait |
+| test_docker_update.py | TestMain | `test_validate_and_status_and_hold` | 5 | internal/cli : `TestValidateAndStatusAndHold` | fait |
+| test_docker_update.py | TestMain | `test_notify_test_command` | 5 | internal/cli : `TestNotifyTestCommand` | fait |
+| test_docker_update.py | TestMain | `test_bad_config_exit_code_2` | 5 | internal/cli : `TestBadConfigExitCode2` | fait |
+| test_docker_update.py | TestMain | `test_lock_prevents_concurrent_runs` | 5 | internal/cli : `TestLockPreventsConcurrentRuns` | fait |
+| test_docker_update.py | TestMain | `test_untrusted_config_refused_as_root` | 5 | internal/cli : `TestUntrustedConfigRefusedAsRoot` | fait |
 | test_docker_update.py | TestReleaseScan | `test_parse_release_version` | 1 | internal/textutil : `TestParseReleaseVersion` | fait |
 | test_docker_update.py | TestReleaseScan | `test_strong_patterns` | 1 | internal/textutil : `TestStrongPatterns` | fait |
 | test_docker_update.py | TestReleaseScan | `test_near_misses_do_not_match` | 1 | internal/textutil : `TestNearMissesDoNotMatch (+ TestWordBoundariesAreUnicode)` | fait |
@@ -279,39 +281,39 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestSetWebhook | `test_other_formats_accept_any_http_url` | 3 | internal/notify : `TestSetWebhookOtherFormatsAcceptAnyHTTPURL` | fait |
 | test_docker_update.py | TestSetWebhook | `test_a_target_file_is_required` | 3 | internal/notify : `TestSetWebhookATargetFileIsRequired` | fait |
 | test_docker_update.py | TestSetWebhook | `test_dry_run_writes_nothing` | 3 | internal/notify : `TestSetWebhookDryRunWritesNothing` | fait |
-| test_docker_update.py | TestSetWebhook | `test_interactive_input_is_hidden` | 5 | internal/cli | à faire |
-| test_docker_update.py | TestSetWebhook | `test_the_url_is_never_a_command_line_argument` | 5 | internal/cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_interactive_input_is_hidden` | 5 | internal/cli : `TestInteractiveInputIsHidden` | fait |
+| test_docker_update.py | TestSetWebhook | `test_the_url_is_never_a_command_line_argument` | 5 | internal/cli : `TestTheURLIsNeverACommandLineArgument` | fait |
 | test_docker_update.py | TestSetWebhook | `test_removed_keys_are_explained` | 2 | internal/config : `TestRemovedKeys` | fait |
-| test_docker_update.py | TestManualScan | `test_check_on_a_selection_scans_only_those` | 4 et 5 | internal/updater, cli : `TestManualScan_CheckOnASelectionScansOnlyThose` | partiel : cœur fait, `cli` en phase 5 |
-| test_docker_update.py | TestManualScan | `test_no_name_scans_everything` | 4 et 5 | internal/updater, cli : `TestManualScan_NoNameScansEverything` | partiel : cœur fait, `cli` en phase 5 |
-| test_docker_update.py | TestManualScan | `test_a_group_name_selects_all_its_members` | 4 et 5 | internal/updater, cli : `TestManualScan_AGroupNameSelectsAllItsMembers` | partiel : cœur fait, `cli` en phase 5 |
-| test_docker_update.py | TestManualScan | `test_several_names_keep_the_file_order_and_unknown_is_refused` | 4 et 5 | internal/updater, cli : `TestManualScan_SeveralNamesKeepTheFileOrderAndUnknownIsRefused` | partiel : cœur fait, `cli` en phase 5 |
-| test_docker_update.py | TestManualScan | `test_run_on_a_selection_updates_only_those` | 4 et 5 | internal/updater, cli : `TestManualScan_RunOnASelectionUpdatesOnlyThose` | partiel : cœur fait, `cli` en phase 5 |
-| test_docker_update.py | TestManualScan | `test_a_selection_never_erases_what_it_did_not_look_at` | 4 et 5 | internal/updater, cli : `TestManualScan_ASelectionNeverErasesWhatItDidNotLookAt` | partiel : cœur fait, `cli` en phase 5 |
-| test_docker_update.py | TestManualScan | `test_a_selection_keeps_the_known_errors_of_the_others` | 4 et 5 | internal/updater, cli : `TestManualScan_ASelectionKeepsTheKnownErrorsOfTheOthers` | partiel : cœur fait, `cli` en phase 5 |
-| test_docker_update.py | TestManualScan | `test_check_notify_sends_the_state_table_of_the_selection` | 4 et 5 | internal/updater, cli : `TestManualScan_CheckNotifySendsTheStateTableOfTheSelection` | partiel : cœur fait, `cli` en phase 5 |
-| test_docker_update.py | TestManualScan | `test_check_without_notify_still_sends_nothing` | 4 et 5 | internal/updater, cli : `TestManualScan_CheckWithoutNotifyStillSendsNothing` | partiel : cœur fait, `cli` en phase 5 |
-| test_docker_update.py | TestManualScan | `test_check_notify_without_a_webhook_fails_loudly` | 4 et 5 | internal/updater, cli : `TestManualScan_CheckNotifyWithoutAWebhookFailsLoudly` | partiel : cœur fait, `cli` en phase 5 |
-| test_docker_update.py | TestManualScan | `test_status_rows` | 4 et 5 | internal/updater, cli : `TestManualScan_StatusRows` | partiel : cœur fait, `cli` en phase 5 |
-| test_e2e.py | E2E | `test_full_life` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | E2E | `test_old_image_is_removed_after_a_successful_update_only` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | E2E | `test_cleanup_can_be_turned_off` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | E2E | `test_check_and_run_accept_names` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | E2E | `test_stopped_container_is_left_alone` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | E2E | `test_failure_alerts_without_rollback_and_exits_1` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | E2E | `test_hold_then_status` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | E2E | `test_bad_config_and_unknown_name` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | Advisories | `test_confirmed_fix_is_applied_despite_the_long_cooldown` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | Advisories | `test_candidate_still_vulnerable_waits_the_normal_delay` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | Advisories | `test_check_does_not_pull_even_with_an_advisory` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | Advisories | `test_unreachable_api_is_not_fatal` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | ReleaseNotes | `test_alert_is_sent_once_and_nothing_is_applied` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | ReleaseNotes | `test_check_reports_but_sends_nothing` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | ReleaseNotes | `test_missing_repository_and_unreachable_api_are_not_errors` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | ReleaseNotes | `test_unreadable_version_gives_one_alert_and_no_request` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | ReleaseNotes | `test_validate_refuses_unknown_and_incomplete_release_keys` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | OneReport | `test_update_and_release_alert_arrive_in_a_single_post` | 5 | e2e (binaire Go) | à faire |
-| test_e2e.py | SetWebhook | `test_set_webhook_through_stdin` | 5 | e2e (binaire Go) | à faire |
+| test_docker_update.py | TestManualScan | `test_check_on_a_selection_scans_only_those` | 4 et 5 | internal/updater, cli : `TestManualScan_CheckOnASelectionScansOnlyThose` | fait |
+| test_docker_update.py | TestManualScan | `test_no_name_scans_everything` | 4 et 5 | internal/updater, cli : `TestManualScan_NoNameScansEverything` | fait |
+| test_docker_update.py | TestManualScan | `test_a_group_name_selects_all_its_members` | 4 et 5 | internal/updater, cli : `TestManualScan_AGroupNameSelectsAllItsMembers` | fait |
+| test_docker_update.py | TestManualScan | `test_several_names_keep_the_file_order_and_unknown_is_refused` | 4 et 5 | internal/updater, cli : `TestManualScan_SeveralNamesKeepTheFileOrderAndUnknownIsRefused` | fait |
+| test_docker_update.py | TestManualScan | `test_run_on_a_selection_updates_only_those` | 4 et 5 | internal/updater, cli : `TestManualScan_RunOnASelectionUpdatesOnlyThose` | fait |
+| test_docker_update.py | TestManualScan | `test_a_selection_never_erases_what_it_did_not_look_at` | 4 et 5 | internal/updater, cli : `TestManualScan_ASelectionNeverErasesWhatItDidNotLookAt` | fait |
+| test_docker_update.py | TestManualScan | `test_a_selection_keeps_the_known_errors_of_the_others` | 4 et 5 | internal/updater, cli : `TestManualScan_ASelectionKeepsTheKnownErrorsOfTheOthers` | fait |
+| test_docker_update.py | TestManualScan | `test_check_notify_sends_the_state_table_of_the_selection` | 4 et 5 | internal/updater, cli : `TestManualScan_CheckNotifySendsTheStateTableOfTheSelection` | fait |
+| test_docker_update.py | TestManualScan | `test_check_without_notify_still_sends_nothing` | 4 et 5 | internal/updater, cli : `TestManualScan_CheckWithoutNotifyStillSendsNothing` | fait |
+| test_docker_update.py | TestManualScan | `test_check_notify_without_a_webhook_fails_loudly` | 4 et 5 | internal/updater, cli : `TestManualScan_CheckNotifyWithoutAWebhookFailsLoudly` | fait |
+| test_docker_update.py | TestManualScan | `test_status_rows` | 4 et 5 | internal/updater, cli : `TestManualScan_StatusRows` | fait |
+| test_e2e.py | E2E | `test_full_life` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | E2E | `test_old_image_is_removed_after_a_successful_update_only` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | E2E | `test_cleanup_can_be_turned_off` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | E2E | `test_check_and_run_accept_names` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | E2E | `test_stopped_container_is_left_alone` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | E2E | `test_failure_alerts_without_rollback_and_exits_1` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | E2E | `test_hold_then_status` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | E2E | `test_bad_config_and_unknown_name` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | Advisories | `test_confirmed_fix_is_applied_despite_the_long_cooldown` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | Advisories | `test_candidate_still_vulnerable_waits_the_normal_delay` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | Advisories | `test_check_does_not_pull_even_with_an_advisory` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | Advisories | `test_unreachable_api_is_not_fatal` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | ReleaseNotes | `test_alert_is_sent_once_and_nothing_is_applied` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | ReleaseNotes | `test_check_reports_but_sends_nothing` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | ReleaseNotes | `test_missing_repository_and_unreachable_api_are_not_errors` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | ReleaseNotes | `test_unreadable_version_gives_one_alert_and_no_request` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | ReleaseNotes | `test_validate_refuses_unknown_and_incomplete_release_keys` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | OneReport | `test_update_and_release_alert_arrive_in_a_single_post` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
+| test_e2e.py | SetWebhook | `test_set_webhook_through_stdin` | 5 | `tests/test_e2e.py` avec `DU_BIN` | fait |
 
 Total : 232 tests Python distincts.
 
@@ -319,6 +321,9 @@ Tests ajoutés par le portage (absents du Python) :
 
 | Go | Pourquoi |
 | --- | --- |
+| `internal/cli` : `TestNotifyTestSendsAMessageAndNeverPrintsTheURL`, `TestValidateAndSetWebhookDoNotTakeTheLock`, `TestSetWebhookReadsOnlyTheFirstLineOfStdin`, `TestStateErrorExitsWith1`, `TestUnknownNameExitsWith1` | codes de sortie, verrou et URL du webhook : propriétés que le Python ne testait que de bout en bout |
+| `internal/cli` : `TestUsageErrors`, `TestOptionPrefixesAndEqualsForm`, `TestHelpAndVersion` | parité d'`argparse` : abréviations uniques, forme `--option=valeur`, options globales avant la commande, code 2 |
+| `tests/test_differential.py` (14 scénarios, `DU_BIN`) | exécute le script Python et le binaire Go sur le même faux Docker et le même faux serveur HTTP, compare codes, sorties, état, requêtes et corps envoyés |
 | `internal/updater` : `TestExtra_HoldOfAGroupPausesEveryMember` | mutation : ignorer la pause d'un groupe (`held`) survivait à toute la suite Python |
 | `internal/updater` : `TestExtra_DryRunNeverWaitsNorProbes` | mutation : en simulation, `up` attendait et sondait quand même |
 | `internal/updater` : `TestExtra_AnAlertWhoseDeliveryFailedIsNotSentAgain` | caractérise le comportement du Python (proposition 3) |

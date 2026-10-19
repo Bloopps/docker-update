@@ -35,6 +35,10 @@ jobs:
         run: go vet ./...
       - name: Tests (avec détecteur de concurrence)
         run: go test -race -count=1 ./...
+      - name: Parité bout en bout et test différentiel (binaire Go contre Python)
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/docker-update" ./cmd/docker-update
+          DU_BIN="$RUNNER_TEMP/docker-update" python3 -W error::ResourceWarning -m unittest tests.test_e2e tests.test_differential -v
       - name: Fuzz court (lecteur TOML)
         run: go test -run '^$' -fuzz FuzzParse -fuzztime 10s ./internal/tomlmini
       - name: Compilation statique (linux amd64 et arm64)

@@ -4,6 +4,9 @@ import datetime, hashlib, http.server, json, os, pathlib, subprocess, sys, tempf
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "docker-update.py"
 SHIM = HERE / "e2e"
+# DU_BIN : chemin d'un binaire à tester (la version Go) ; sans lui, on lance le script Python.
+DU_BIN = os.environ.get("DU_BIN")
+PROGRAM = [DU_BIN] if DU_BIN else [sys.executable, "-I", str(SCRIPT)]
 
 
 def man(n):
@@ -60,8 +63,7 @@ cooldown = "{cooldown}"
 
     def du(self, *args):
         env = dict(os.environ, PATH=f"{SHIM}:{os.environ['PATH']}", SHIM_STATE=str(self.shim_state))
-        return subprocess.run([sys.executable, "-I", str(SCRIPT), "--config", str(self.cfg),
-                               "--allow-untrusted-config", *args],
+        return subprocess.run([*PROGRAM, "--config", str(self.cfg), "--allow-untrusted-config", *args],
                               capture_output=True, text=True, env=env, timeout=60)
 
     def image(self):
@@ -410,7 +412,7 @@ class SetWebhook(E2E):
         self.write_cfg("0")
         self.cfg.write_text(self.cfg.read_text().replace("settle_seconds = 0", f'settle_seconds = 0\nnotify_url_file = "{target}"'))
         env = dict(os.environ, PATH=f"{SHIM}:{os.environ['PATH']}", SHIM_STATE=str(self.shim_state))
-        r = subprocess.run([sys.executable, "-I", str(SCRIPT), "--config", str(self.cfg), "--allow-untrusted-config", "set-webhook"],
+        r = subprocess.run([*PROGRAM, "--config", str(self.cfg), "--allow-untrusted-config", "set-webhook"],
                            input=self.URL + "\n", capture_output=True, text=True, env=env, timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(target.read_text(), self.URL + "\n")
