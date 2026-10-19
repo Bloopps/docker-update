@@ -494,3 +494,159 @@ func TestAFileThatFailsToReadBackIsRolledBack(t *testing.T) {
 		t.Fatalf("la sauvegarde reste : %v", r.backups())
 	}
 }
+
+func TestRenameAServiceMovesTheStateWithIt(t *testing.T) {
+	r := newEditRig(t)
+	statePath := filepath.Join(r.dir, "state", "state.json")
+	st, _ := state.Load(statePath)
+	st.Holds = []string{"web", "tail"}
+	st.Errors["web"] = "boom"
+	st.Errors["tail"] = "other"
+	st.Alerts["release:web:v1"] = 7
+	st.Alerts["release:webby:v1"] = 8
+	if err := st.Save(); err != nil {
+		t.Fatal(err)
+	}
+	before := r.read()
+	if code := r.run("rename", "web", "front", "--yes"); code != 0 {
+		t.Fatalf("code %d\n%s%s", code, r.out, r.errOut)
+	}
+	if join(r.names()) != "front,app-db,app-web,tail" {
+		t.Fatalf("noms = %v", r.names())
+	}
+	if got := r.read(); got != strings.Replace(before, `name        = "web"`, `name        = "front"`, 1) {
+		t.Fatalf("seule la ligne name doit changer :\n%s", got)
+	}
+	if len(r.backups()) != 1 {
+		t.Fatalf("sauvegardes = %v", r.backups())
+	}
+	st, _ = state.Load(statePath)
+	if join(st.Holds) != "front,tail" || st.Errors["front"] != "boom" || st.Errors["web"] != "" || st.Errors["tail"] != "other" {
+		t.Fatalf("pauses = %v, erreurs = %v", st.Holds, st.Errors)
+	}
+	if st.Alerts["release:front:v1"] != 7 || st.Alerts["release:webby:v1"] != 8 {
+		t.Fatalf("alertes = %v", st.Alerts)
+	}
+	if _, ok := st.Alerts["release:web:v1"]; ok {
+		t.Fatalf("ancienne alerte conservée : %v", st.Alerts)
+	}
+	if len(*r.calls) != 0 {
+		t.Fatalf("rename ne lance aucune commande docker : %v", *r.calls)
+	}
+}
+
+func TestRenameAGroupChangesEveryMemberAndTheHold(t *testing.T) {
+	r := newEditRig(t)
+	statePath := filepath.Join(r.dir, "state", "state.json")
+	st, _ := state.Load(statePath)
+	st.Holds = []string{"app"}
+	st.Errors["app-db"] = "boom"
+	if err := st.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if code := r.run("rename", "--group", "app", "stack", "--yes"); code != 0 {
+		t.Fatalf("code %d\n%s%s", code, r.out, r.errOut)
+	}
+	got := r.read()
+	if strings.Count(got, `group = "stack"`) != 2 || strings.Contains(got, `"app"`) {
+		t.Fatalf("les deux membres doivent changer :\n%s", got)
+	}
+	st, _ = state.Load(statePath)
+	if join(st.Holds) != "stack" || st.Errors["app-db"] != "boom" {
+		t.Fatalf("pauses = %v, erreurs = %v", st.Holds, st.Errors)
+	}
+}
+
+func TestRenameRefusalsAndSimulationChangeNothing(t *testing.T) {
+	r := newEditRig(t)
+	statePath := filepath.Join(r.dir, "state", "state.json")
+	st, _ := state.Load(statePath)
+	st.Holds = []string{"web"}
+	if err := st.Save(); err != nil {
+		t.Fatal(err)
+	}
+	before := r.read()
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"rename", "nope", "x", "--yes"}, "service inconnu"},
+		{[]string{"rename", "--group", "nope", "x", "--yes"}, "groupe inconnu"},
+		{[]string{"rename", "web", "web", "--yes"}, "identiques"},
+		{[]string{"rename", "web", "tail", "--yes"}, "refusé"}, // nom déjà pris
+		{[]string{"rename", "web", "app", "--yes"}, "refusé"},  // nom d'un groupe
+		{[]string{"rename", "web", "Mauvais Nom", "--yes"}, "refusé"},
+		{[]string{"rename", "--group", "app", "web", "--yes"}, "refusé"}, // groupe qui porte le nom d'un service
+		{[]string{"--dry-run", "rename", "web", "front", "--yes"}, "[simulation]"},
+	} {
+		r.fresh()
+		code := r.run(tc.args...)
+		if code != 1 && !(tc.want == "[simulation]" && code == 0) {
+			t.Fatalf("%v : code %d\n%s%s", tc.args, code, r.out, r.errOut)
+		}
+		r.must(tc.want)
+		if r.read() != before || len(r.backups()) != 0 {
+			t.Fatalf("%v : fichier modifié", tc.args)
+		}
+		if after, _ := state.Load(statePath); join(after.Holds) != "web" {
+			t.Fatalf("%v : état modifié : %v", tc.args, after.Holds)
+		}
+	}
+	r.fresh()
+	if code := r.run("rename", "web"); code != 2 {
+		t.Fatalf("un seul nom : code %d", code)
+	}
+	r.env.Stdin = strings.NewReader("")
+	if code := r.run("rename", "web", "front"); code != 1 || r.read() != before {
+		t.Fatalf("sans confirmation : code %d", code)
+	}
+}
+
+func TestValidateOnlineChecksTheGitHubRepos(t *testing.T) {
+	r := newEditRig(t)
+	tok := filepath.Join(r.dir, "token")
+	if err := os.WriteFile(tok, []byte("ghp_secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := strings.Replace(editBase, "lock_file = %q\n", "lock_file = %q\ngithub_token_file = \""+tok+"\"\ngithub_api = \"https://api.test\"\n", 1)
+	cfg = strings.Replace(cfg, `service     = "web"`, "service     = \"web\"\nadvisories  = [\"ok/repo\", \"typo/repo\"]\nrelease_notes = true\nrelease_notes_repos = [\"ok/repo\", \"down/repo\", \"limit/repo\"]", 1)
+	r.writeEdit(cfg)
+	codes := map[string]int{"ok/repo": 200, "typo/repo": 404, "down/repo": 0, "limit/repo": 403}
+	var asked []string
+	var tokens []string
+	r.env.GHGet = func(url, token, etag string) (int, any, string) {
+		asked = append(asked, url)
+		tokens = append(tokens, token)
+		return codes[strings.TrimPrefix(url, "https://api.test/repos/")], nil, ""
+	}
+	if code := r.run("validate"); code == 2 || len(asked) != 0 {
+		t.Fatalf("sans --online aucune requête : code %d, %v", code, asked)
+	}
+	r.fresh()
+	if code := r.run("validate", "--online"); code != 1 {
+		t.Fatalf("code %d", code)
+	}
+	asked, tokens = nil, nil
+	loaded, err := config.Load(r.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := checkRepos(loaded, r.env, func(string) {}); n != 1 {
+		t.Fatalf("seul le dépôt introuvable est une erreur, pas les avertissements : %d", n)
+	}
+	if join(asked) != "https://api.test/repos/down/repo,https://api.test/repos/limit/repo,https://api.test/repos/ok/repo,https://api.test/repos/typo/repo" {
+		t.Fatalf("chaque dépôt est demandé une fois, dans l'ordre : %v", asked)
+	}
+	for _, tk := range tokens {
+		if tk != "ghp_secret" {
+			t.Fatalf("jeton non transmis : %q", tk)
+		}
+	}
+	r.must("dépôt ok/repo : trouvé (web)")
+	r.must("ERREUR : dépôt GitHub introuvable : typo/repo (utilisé par web)")
+	r.must("AVERTISSEMENT : dépôt down/repo non vérifié (GitHub injoignable)")
+	r.must("AVERTISSEMENT : dépôt limit/repo non vérifié (réponse HTTP 403")
+	if strings.Contains(r.out.String()+r.errOut.String(), "ghp_secret") {
+		t.Fatal("le jeton ne doit jamais être journalisé")
+	}
+}

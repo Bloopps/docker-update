@@ -17,6 +17,7 @@ import (
 
 	"github.com/Bloopps/docker-update/internal/config"
 	"github.com/Bloopps/docker-update/internal/dockerx"
+	"github.com/Bloopps/docker-update/internal/github"
 	"github.com/Bloopps/docker-update/internal/notify"
 	"github.com/Bloopps/docker-update/internal/state"
 	"github.com/Bloopps/docker-update/internal/updater"
@@ -55,6 +56,8 @@ type Env struct {
 	Dial    func(addr string) error
 	// Load relit la configuration écrite par add / delete (défaut : config.Load).
 	Load func(path string) (*config.Config, error)
+	// GHGet lit l'API GitHub pour `validate --online` (défaut : github.Get).
+	GHGet github.GetFunc
 	// Now donne l'heure (nom des sauvegardes) ; défaut : time.Now.
 	Now func() time.Time
 	// NewEngine construit le cœur (défaut : updater.New).
@@ -133,6 +136,9 @@ func (e *Env) fill() {
 	if e.Load == nil {
 		e.Load = config.Load
 	}
+	if e.GHGet == nil {
+		e.GHGet = github.Get
+	}
 	if e.Now == nil {
 		e.Now = time.Now
 	}
@@ -208,7 +214,7 @@ func execute(g globals, cmd string, sub subArgs, env *Env, log func(string)) (in
 	}
 	switch cmd {
 	case "validate":
-		return validate(cfg, log), nil
+		return validate(cfg, sub.flags["--online"], env, log), nil
 	case "set-webhook":
 		return 0, setWebhook(cfg, g.dryRun, env, log)
 	case "list":
@@ -220,6 +226,8 @@ func execute(g globals, cmd string, sub subArgs, env *Env, log func(string)) (in
 		return 0, nil
 	case "add":
 		return addCmd(env, g, sub, cfg, log)
+	case "rename":
+		return renameCmd(env, g, sub, cfg, log)
 	case "delete":
 		return deleteCmd(env, g, sub, cfg, log)
 	}
@@ -277,8 +285,8 @@ func lock(path string) (func(), error) {
 	return func() { f.Close() }, nil
 }
 
-// validate vérifie la configuration et les outils, sans rien toucher.
-func validate(cfg *config.Config, log func(string)) int {
+// validate vérifie la configuration et les outils, sans rien toucher (--online : et que les dépôts GitHub existent).
+func validate(cfg *config.Config, online bool, env *Env, log func(string)) int {
 	problems := 0
 	tools := []string{"docker"}
 	if cfg.Settings.RegistryTool == "regctl" {
@@ -312,6 +320,9 @@ func validate(cfg *config.Config, log func(string)) int {
 		case info.Mode().Perm()&0o077 != 0:
 			log(fmt.Sprintf("AVERTISSEMENT : %s est lisible par d'autres comptes (chmod 600)", nu))
 		}
+	}
+	if online {
+		problems += checkRepos(cfg, env, log)
 	}
 	verdict := "OK"
 	if problems > 0 {

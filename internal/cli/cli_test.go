@@ -239,7 +239,7 @@ func TestValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	var lines []string
-	rc := validate(cfg, func(m string) { lines = append(lines, m) })
+	rc := validate(cfg, false, &Env{}, func(m string) { lines = append(lines, m) })
 	text := strings.Join(lines, "\n")
 	if rc != 1 {
 		t.Errorf("code %d, attendu 1", rc)

@@ -9,6 +9,7 @@ package tomledit
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -300,3 +301,28 @@ func Quote(s string) string {
 	b.WriteByte('"')
 	return b.String()
 }
+
+// SetString remplace la valeur (texte sur une seule ligne) de la clé `key` dans le bloc `name` ; le commentaire de fin de
+// ligne est conservé. Renvoie false si la clé n'est pas dans le bloc. Une valeur d'une autre forme (tableau, entier…) est refusée.
+func (f *File) SetString(name, key, value string) (bool, error) {
+	i := f.Index(name)
+	if i < 0 {
+		return false, &Error{fmt.Sprintf("service inconnu : %s", name)}
+	}
+	b := f.blocks[i]
+	for l := b.header + 1; l <= b.end; l++ {
+		m := setLine.FindStringSubmatch(f.lines[l])
+		if m == nil || m[2] != key {
+			continue
+		}
+		if m[3] == "" {
+			return false, &Error{fmt.Sprintf("la clé %s du service %s n'est pas un texte sur une ligne : modification à la main", key, name)}
+		}
+		f.lines[l] = m[1] + Quote(value) + m[4]
+		return true, f.reparse()
+	}
+	return false, nil
+}
+
+// setLine : indentation + clé + « = », valeur texte entre guillemets (m[3] vide si autre forme), reste de la ligne.
+var setLine = regexp.MustCompile(`^(\s*([A-Za-z0-9_-]+)\s*=\s*)("(?:[^"\\]|\\.)*"|'[^']*')?(.*)$`)

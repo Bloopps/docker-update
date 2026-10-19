@@ -330,6 +330,7 @@ Tests ajoutés par le portage (absents du Python) :
 | `tests/test_differential.py` (14 scénarios, `DU_BIN`) ; **supprimé avec le Python** (dernier état : commit `50952f1`) | exécute le script Python et le binaire Go sur le même faux Docker et le même faux serveur HTTP, compare codes, sorties, état, requêtes et corps envoyés |
 | `internal/updater` : `TestExtra_HoldOfAGroupPausesEveryMember` | mutation : ignorer la pause d'un groupe (`held`) survivait à toute la suite Python |
 | `internal/updater` : `TestExtra_DryRunNeverWaitsNorProbes` | mutation : en simulation, `up` attendait et sondait quand même |
+| `internal/cli` : `TestRename*`, `TestValidateOnlineChecksTheGitHubRepos` ; `internal/tomledit` : `TestSetStringKeepsEverythingElse` | proposition 7 ; mutation : état non reporté (pauses, erreurs, alertes), garde « mêmes noms », 404 non compté, jeton non transmis : tous détectés |
 | `internal/updater` : `TestExtra_AnAlertWhoseDeliveryFailedIsSentAgainThenOnlyOnce`, `TestModes_NotifyModeRetriesAfterAFailedDelivery` | proposition 3 (appliquée) ; mutation : inscrire les alertes avant l'envoi, ou ignorer l'échec, est détecté |
 
 Mutation manuelle de la phase 4 (34 défauts introduits à la main dans `internal/updater`, suite relancée à chaque fois) : 31 détectés d'emblée,
@@ -361,6 +362,9 @@ d'un test) et 1 équivalent documenté. Rejouer : voir `docs/PORTAGE.md` ci-dess
 
 32. **Tables et clés inconnues refusées** (proposition 2) : une table `[x]`, un `[[x]]` autre que `[[service]]` ou une clé à la racine du fichier est une erreur de configuration (code 2) ; le Python les ignorait.
 33. **Alerte non envoyée = renvoyée** (proposition 3) : si l'envoi du rapport échoue, les alertes et les « prêtes » de ce rapport ne sont pas marquées signalées ; le passage suivant les renvoie. Le Python les perdait.
+
+34. **`rename`** (proposition 7) : nouvelle commande ; `tomledit.SetString` ne change que la ligne visée (commentaire de fin de ligne conservé) ; refuse une valeur qui n'est pas un texte sur une ligne.
+35. **`validate --online`** (proposition 7) : requête `GET {github_api}/repos/DÉPÔT` par dépôt distinct ; 404 = erreur (code 1), réseau coupé ou autre code = avertissement ; le jeton n'est jamais journalisé.
 
 ## 5. Propositions
 
@@ -422,4 +426,5 @@ Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *ef
 - **Pourquoi** : renommer à la main laisse des entrées orphelines dans l'état ; une faute de frappe sur un dépôt n'est vue qu'au passage suivant (réponse 404 traitée comme vide).
 - **Effet** : nouvelles commandes seulement. **Risque** : faible. **Effort** : moyen.
 - **Recommandation** : `rename` et la vérification des dépôts : faire ; `edit` et l'export : à discuter.
+- **État** : `rename` et `validate --online` appliqués (écarts n° 34 et 35) ; `edit` et l'export : non faits, en attente du propriétaire.
 

@@ -86,7 +86,7 @@ L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n
 
 | Commande | Effet |
 | --- | --- |
-| `validate` | vérifie configuration, outils et chemins ; ne touche à rien |
+| `validate [--online]` | vérifie configuration, outils et chemins ; ne touche à rien. `--online` : vérifie aussi que chaque dépôt de `advisories` et `release_notes_repos` existe sur GitHub (introuvable = erreur ; réseau ou limite de débit = avertissement) |
 | `check [NOM…] [--notify]` | **scan manuel** de tous les services, ou de ceux désignés (nom de service ou de groupe) : registre, état, tests de fumée, version détectée ; n'applique **rien**, n'envoie **rien**, ne télécharge **rien**. Avec `--notify`, le tableau d'état de la sélection part sur Discord (📋, un message) |
 | `run [NOM…]` | observe, applique ce qui est prêt en mode `auto`, notifie ; tous les services, ou la sélection |
 | `now NOM… --yes` | applique tout de suite (sans délai ni fenêtre) ; sans `--yes`, simule |
@@ -97,9 +97,10 @@ L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n
 | `init [--yes] [--check] [--force]` | vérifie l'installation, relève les conteneurs Compose qui tournent et crée la configuration (voir Installation) |
 | `list` | tableau des services configurés : groupe, mode, délai, fenêtre, veille (avis, notes), pause ; lecture seule |
 | `add NOM --compose-dir D --service S [options]` | ajoute **un** service au fichier de configuration (voir ci-dessous) |
+| `rename ANCIEN NOUVEAU [--group]` | renomme un service (ou un groupe avec `--group`) dans le fichier et reporte pauses, erreurs et alertes de l'état sous le nouveau nom |
 | `delete NOM… [--group G] [--keep-state]` | retire des services du fichier (voir ci-dessous) |
 
-### Modifier la configuration : `add` et `delete`
+### Modifier la configuration : `add`, `rename` et `delete`
 
 Le fichier TOML reste la source de vérité : ces commandes l'éditent **par son texte**, sans toucher à vos commentaires ni à votre
 mise en forme. À chaque écriture : aperçu (diff), confirmation (`--yes` pour passer ; `--dry-run` pour ne rien écrire), sauvegarde de
@@ -114,7 +115,8 @@ relecture et validation du résultat (l'ancien fichier est remis en place si ell
   Refus : nom déjà pris, nom de groupe égal à un nom de service, réglages incompatibles avec ceux du groupe.
 - `delete` retire les blocs désignés avec les commentaires collés au-dessus, et nettoie l'état (pauses, erreurs, alertes de ces services ;
   `--keep-state` pour ne rien toucher). **Aucun conteneur ni image n'est touché** : le conteneur continue de tourner, hors du suivi.
-- Les fichiers aux fins de ligne Windows (`\r\n`) sont refusés par ces deux commandes (convertir avec `dos2unix`).
+- `rename` ne change que la ligne `name` (ou les lignes `group` de tous les membres) ; refus si le nouveau nom est déjà pris, invalide, ou si un nom de service et un nom de groupe se confondraient. Les conteneurs ne bougent pas.
+- Les fichiers aux fins de ligne Windows (`\r\n`) sont refusés par ces commandes (convertir avec `dos2unix`).
 
 Options globales : `--config CHEMIN`, `--dry-run` (aucune commande qui modifie quoi que ce soit, état non écrit).
 

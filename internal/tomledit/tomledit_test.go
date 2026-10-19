@@ -263,3 +263,39 @@ func TestInsertGoesAfterTheTrailingCommentsOfTheBlock(t *testing.T) {
 		t.Fatalf("une ligne vide sépare le nouveau bloc :\n%s", got)
 	}
 }
+
+func TestSetStringKeepsEverythingElse(t *testing.T) {
+	src := "[[service]]\nname = \"a\"   # le nom\nservice = \"a\"\nadvisories = [\n  \"name = x\",\n]\n\n[[service]]\nname = \"b\"\nmode = 'notify'\ngroup = \"g\"\n"
+	f, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// « z"q » est un nom invalide pour la configuration mais valide pour TOML : l'édition seule l'échappe
+	if ok, err := f.SetString("a", "name", "z\"q"); !ok || err != nil {
+		t.Fatalf("%v %v", ok, err)
+	}
+	if !strings.Contains(string(f.Bytes()), `name = "z\"q"   # le nom`) {
+		t.Fatalf("commentaire de fin de ligne perdu :\n%s", f.Bytes())
+	}
+	f, _ = Parse([]byte(src))
+	if ok, err := f.SetString("b", "group", "h"); !ok || err != nil {
+		t.Fatalf("%v %v", ok, err)
+	}
+	want := strings.Replace(src, `group = "g"`, `group = "h"`, 1)
+	if string(f.Bytes()) != want {
+		t.Fatalf("seule la ligne du groupe doit changer :\n%s", f.Bytes())
+	}
+	if ok, _ := f.SetString("a", "group", "h"); ok {
+		t.Fatal("clé absente du bloc a (elle est dans le bloc b)")
+	}
+	if ok, err := f.SetString("a", "advisories", "x"); ok || err == nil {
+		t.Fatal("un tableau n'est pas un texte sur une ligne")
+	}
+	if _, err := f.SetString("inconnu", "name", "x"); err == nil {
+		t.Fatal("service inconnu")
+	}
+	f, _ = Parse([]byte(src))
+	if ok, err := f.SetString("b", "mode", "auto"); !ok || err != nil || !strings.Contains(string(f.Bytes()), `mode = "auto"`) {
+		t.Fatalf("guillemets simples : %v %v", ok, err)
+	}
+}

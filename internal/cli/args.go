@@ -114,7 +114,7 @@ type subSpec struct {
 }
 
 var subcommands = map[string]subSpec{
-	"validate":    {},
+	"validate":    {flags: []string{"--online"}},
 	"check":       {names: "*", flags: []string{"--notify"}},
 	"run":         {names: "*"},
 	"status":      {},
@@ -126,6 +126,7 @@ var subcommands = map[string]subSpec{
 	"version":     {},
 	"list":        {},
 	"init":        {flags: []string{"--yes", "--check", "--force", "--skip-checks"}, valued: []string{"--mode", "--include", "--exclude"}},
+	"rename":      {names: "+", flags: []string{"--group", "--yes"}},
 	"delete":      {names: "*", flags: []string{"--keep-state", "--yes"}, valued: []string{"--group"}},
 	"add": {names: "1", flags: []string{"--release-notes", "--yes", "--first"}, optBool: []string{"--cleanup"},
 		valued: []string{"--compose-dir", "--service", "--compose-file", "--mode", "--cooldown", "--window", "--group",
@@ -133,7 +134,7 @@ var subcommands = map[string]subSpec{
 			"--release-notes-repos", "--release-notes-ignore", "--smoke-url", "--smoke-expect", "--after"}},
 }
 
-var commandOrder = []string{"validate", "check", "run", "now", "hold", "unhold", "status", "notify-test", "set-webhook", "init", "list", "add", "delete", "version"}
+var commandOrder = []string{"validate", "check", "run", "now", "hold", "unhold", "status", "notify-test", "set-webhook", "init", "list", "add", "rename", "delete", "version"}
 
 type subArgs struct {
 	names  []string
@@ -214,7 +215,7 @@ Utilisation : docker-update [--config FICHIER] [--dry-run] [--allow-untrusted-co
 Les options viennent AVANT la commande.
 
 Commandes :
-  validate            vérifie la configuration et les outils, ne touche à rien
+  validate [--online] vérifie la configuration et les outils, ne touche à rien (--online : et que les dépôts GitHub existent)
   check [NOM...]      scan sans rien appliquer : tous les services, ou ceux désignés (--notify : envoie le tableau d'état)
   run [NOM...]        scan, applique le « auto » prêt, notifie : tous les services, ou ceux désignés
   now NOM... --yes    applique tout de suite (sans délai ni fenêtre) les services ou groupes nommés
@@ -225,6 +226,7 @@ Commandes :
   init                vérifie l'installation, puis crée la configuration à partir des conteneurs qui tournent (init --check : vérifications seules)
   list                tableau des services configurés (lecture seule)
   add NOM [options]   ajoute un service au fichier de configuration (aperçu, confirmation, sauvegarde, validation)
+  rename ANCIEN NOUVEAU  renomme un service (ou --group : un groupe) dans le fichier et dans l'état
   delete NOM...       retire des services du fichier (ou --group G) ; ne touche à aucun conteneur ni image
   version             affiche la version
 
