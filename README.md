@@ -6,15 +6,19 @@ minuteur `systemd`. Aucun conteneur n'a accès au socket Docker (contrairement �
 
 ## Installation
 
-Prérequis : `docker` avec le plugin `compose`. Téléchargez le binaire depuis la page « Releases » du dépôt, puis :
+Prérequis : Linux (amd64 ou arm64) avec `docker` et le plugin `compose`.
 
 ```sh
-chmod +x docker-update-linux-amd64 && sudo ./docker-update-linux-amd64 init
+arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+curl -fsSL -o docker-update "https://github.com/Bloopps/docker-update/releases/latest/download/docker-update-linux-$arch"
+chmod +x docker-update && sudo ./docker-update init
 ```
+
+(ou téléchargez `docker-update-linux-amd64` / `-arm64` à la main depuis la [page des releases](https://github.com/Bloopps/docker-update/releases/latest))
 
 `init` vérifie le serveur, installe le binaire et le minuteur, vous demande quels conteneurs suivre et écrit la configuration. Il
 demande confirmation avant chaque modification et ne met rien à jour : tous les services démarrent en mode `notify` (l'outil vous
-prévient, vous appliquez).
+prévient, vous appliquez). Pour mettre l'outil à jour plus tard : `sudo docker-update update`.
 
 ## Usage
 
