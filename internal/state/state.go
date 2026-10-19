@@ -50,8 +50,20 @@ type State struct {
 	Holds      []string                            `json:"holds"`
 	Images     map[string]*Image                   `json:"images"`
 	Releases   map[string]*Feed[textutil.Release]  `json:"releases"`
+	Schema     int                                 `json:"schema"`
 
 	path string
+	// migratedFrom : version lue dans le fichier quand elle était plus ancienne (-1 : rien à migrer).
+	migratedFrom int
+}
+
+// CurrentSchema est la version du format d'état que cette version de l'outil écrit (clé « schema » ; absente = 0).
+// Un changement de format non lisible tel quel ajoute une entrée à migrations et incrémente CurrentSchema.
+const CurrentSchema = 1
+
+// migrations[i] fait passer l'état de la version i à i+1. 0 -> 1 : la clé « schema » apparaît, rien d'autre ne change.
+var migrations = []func(s *State) error{
+	func(s *State) error { return nil },
 }
 
 func (s *State) init() {
@@ -77,7 +89,7 @@ func (s *State) init() {
 
 // Load lit l'état ; un fichier absent donne un état vide.
 func Load(path string) (*State, error) {
-	s := &State{path: path}
+	s := &State{path: path, migratedFrom: -1, Schema: CurrentSchema}
 	s.init()
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -94,6 +106,15 @@ func Load(path string) (*State, error) {
 			return nil, &Error{fmt.Sprintf("état invalide : %s", path)} // JSON valide, mais pas un objet
 		}
 		return nil, unreadable
+	}
+	version := 0
+	if raw, ok := top["schema"]; ok {
+		if json.Unmarshal(raw, &version) != nil || version < 0 {
+			return nil, &Error{fmt.Sprintf("état invalide (schema) : %s", path)}
+		}
+		if version > CurrentSchema {
+			return nil, &Error{fmt.Sprintf("l'état %s est au format %d, plus récent que celui de cette version de l'outil (%d) : lancer `docker-update update`", path, version, CurrentSchema)}
+		}
 	}
 	for _, f := range []struct {
 		key string
@@ -131,6 +152,16 @@ func Load(path string) (*State, error) {
 			v.Items = []textutil.Release{}
 		}
 	}
+	// Format plus ancien : migré en mémoire ; l'ancien fichier est copié (path.vN.bak) à la première écriture.
+	if version < CurrentSchema {
+		for v := version; v < CurrentSchema; v++ {
+			if err := migrations[v](s); err != nil {
+				return nil, &Error{fmt.Sprintf("migration de l'état %d -> %d impossible : %v", v, v+1, err)}
+			}
+		}
+		s.migratedFrom = version
+	}
+	s.Schema = CurrentSchema
 	return s, nil
 }
 
@@ -192,9 +223,18 @@ func escapeNonASCII(b []byte) []byte {
 
 // Save écrit l'état de façon atomique : fichier temporaire dans le même dossier, droits 600, renommage.
 func (s *State) Save() error {
+	s.Schema = CurrentSchema
 	data, err := s.Marshal()
 	if err != nil {
 		return err
+	}
+	if s.migratedFrom >= 0 {
+		if old, err := os.ReadFile(s.path); err == nil {
+			if err := os.WriteFile(fmt.Sprintf("%s.v%d.bak", s.path, s.migratedFrom), old, 0o600); err != nil {
+				return fmt.Errorf("sauvegarde de l'ancien état impossible, rien n'est écrit : %w", err)
+			}
+		}
+		s.migratedFrom = -1
 	}
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

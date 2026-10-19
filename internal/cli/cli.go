@@ -256,6 +256,8 @@ func execute(g globals, cmd string, sub subArgs, env *Env, log func(string)) (in
 		return 0, nil
 	case "add":
 		return addCmd(env, g, sub, cfg, log)
+	case "migrate":
+		return migrateCmd(env, g, sub, cfg, log)
 	case "edit":
 		return editCmd(env, g, sub, cfg, log)
 	case "export":
@@ -322,6 +324,9 @@ func lock(path string) (func(), error) {
 // validate vérifie la configuration et les outils, sans rien toucher (--online : et que les dépôts GitHub existent).
 func validate(cfg *config.Config, online bool, env *Env, log func(string)) int {
 	problems := 0
+	if len(cfg.Migrations) > 0 {
+		log("AVERTISSEMENT : la configuration est dans un ancien format (lue telle quelle) ; `docker-update migrate` la met à jour")
+	}
 	tools := []string{"docker"}
 	if cfg.Settings.RegistryTool == "regctl" {
 		tools = append(tools, "regctl")

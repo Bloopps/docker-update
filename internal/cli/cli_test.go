@@ -424,3 +424,46 @@ func TestUpdateCommandNeedsNoConfigAndCheckChangesNothing(t *testing.T) {
 		t.Fatalf("option inconnue : code %d", code)
 	}
 }
+
+func TestMigrateRewritesOldConfigWithBackupAndIsIdempotent(t *testing.T) {
+	r := newRig(t, "")
+	before, _ := os.ReadFile(r.cfg)
+	// validate prévient, sans rien écrire
+	r.run("validate")
+	if !strings.Contains(r.out.String(), "ancien format") {
+		t.Fatalf("pas d'avertissement : %s", r.out.String())
+	}
+	if after, _ := os.ReadFile(r.cfg); string(after) != string(before) {
+		t.Fatal("validate a modifié le fichier")
+	}
+	// --dry-run : aperçu seulement
+	r.out.Reset()
+	if code := r.run("--dry-run", "migrate", "--yes"); code != 0 {
+		t.Fatalf("code %d : %s", code, r.out.String())
+	}
+	if after, _ := os.ReadFile(r.cfg); string(after) != string(before) {
+		t.Fatal("--dry-run a écrit")
+	}
+	r.out.Reset()
+	if code := r.run("migrate", "--yes"); code != 0 {
+		t.Fatalf("code %d : %s %s", code, r.out.String(), r.errOut.String())
+	}
+	after, _ := os.ReadFile(r.cfg)
+	if !strings.Contains(string(after), "config_version = 1") {
+		t.Fatalf("version non posée :\n%s", after)
+	}
+	baks, _ := filepath.Glob(r.cfg + ".bak-*")
+	if len(baks) != 1 {
+		t.Fatalf("sauvegardes : %v", baks)
+	}
+	if b, _ := os.ReadFile(baks[0]); string(b) != string(before) {
+		t.Fatal("sauvegarde différente de l'original")
+	}
+	r.out.Reset()
+	if code := r.run("migrate", "--yes"); code != 0 || !strings.Contains(r.out.String(), "à jour") {
+		t.Fatalf("seconde passe : %d %s", code, r.out.String())
+	}
+	if again, _ := os.ReadFile(r.cfg); string(again) != string(after) {
+		t.Fatal("seconde passe a réécrit")
+	}
+}

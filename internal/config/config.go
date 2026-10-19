@@ -97,6 +97,8 @@ func (s *Service) Unit() string {
 type Config struct {
 	Settings Settings
 	Services []*Service
+	// Migrations : étapes de migration appliquées en mémoire à la lecture (vide si le fichier est au format courant).
+	Migrations []string
 }
 
 // DefaultSettings : valeurs par défaut de [settings].
@@ -109,7 +111,7 @@ func DefaultSettings() Settings {
 	}
 }
 
-var settingsKeys = []string{"state_file", "lock_file", "registry_tool", "notify_url_file", "notify_format",
+var settingsKeys = []string{"config_version", "state_file", "lock_file", "registry_tool", "notify_url_file", "notify_format",
 	"default_cooldown", "settle_seconds", "health_timeout", "window",
 	"github_api", "github_token_file", "advisory_poll", "advisory_lookback", "version_label", "cleanup"}
 
@@ -598,11 +600,21 @@ func Load(path string) (*Config, error) {
 		}
 		return nil, errf("configuration illisible : %v", err)
 	}
+	// Un fichier d'un format plus ancien est mis au format courant en mémoire : l'outil continue de fonctionner tel quel après
+	// une mise à jour ; `docker-update migrate` réécrit le fichier (avec sauvegarde).
+	data, steps, err := Migrate(data)
+	if err != nil {
+		return nil, err
+	}
 	doc, err := tomlmini.Parse(data)
 	if err != nil {
 		return nil, errf("configuration illisible : %v", err)
 	}
-	return Parse(doc)
+	cfg, err := Parse(doc)
+	if cfg != nil {
+		cfg.Migrations = steps
+	}
+	return cfg, err
 }
 
 // CheckTrusted : quand l'outil tourne en root (euid 0), la configuration (qui désigne les piles compose pilotées en

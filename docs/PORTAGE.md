@@ -441,3 +441,7 @@ Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *ef
 - **Quoi** : `release.yml` publie une release à chaque fusion sur `main` (étiquette `vX.Y.Z` calculée : dernière + 1 sur le correctif ; étiquette manuelle toujours possible) ; la commande `update` remplace le binaire par celui de la dernière release (SHA256SUMS vérifié, ELF contrôlé, renommage atomique, jamais de retour en arrière, ni configuration ni conteneurs touchés).
 - **Effet** : une commande et un workflow nouveaux ; aucun changement des commandes existantes. **Risque** : faible (le binaire n'est remplacé qu'après vérification) ; la confiance repose sur le dépôt GitHub (limite documentée).
 - **État** : appliquée, à vérifier une fois en conditions réelles (première release automatique après fusion).
+
+### Proposition 9 : migrations de la configuration et de l'état
+- **Quoi** : `config_version` ([settings]) et `schema` (état) ; migrations en mémoire à la lecture, `migrate` pour réécrire la configuration, copie `.vN.bak` de l'état ; refus d'un fichier plus récent que l'outil.
+- **Effet** : le fichier d'état gagne la clé `schema` (la réécriture n'est donc plus identique octet pour octet à celle du Python : le test de parité attend cette seule différence). **Risque** : faible. **État** : appliquée.

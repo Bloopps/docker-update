@@ -147,6 +147,7 @@ func Run(d Deps, check bool, log func(string)) (Result, error) {
 	res.Updated = true
 	log(fmt.Sprintf("mis à jour : %s -> %s (%s)", d.Current, tag, d.Target))
 	log("la configuration et les conteneurs n'ont pas été touchés ; le prochain passage utilisera la nouvelle version")
+	log("conseil : `docker-update validate` puis, si demandé, `docker-update migrate`")
 	return res, nil
 }
 

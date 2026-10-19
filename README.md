@@ -21,7 +21,7 @@ chmod +x docker-update-linux-amd64
 sudo ./docker-update-linux-amd64 init
 ```
 
-Ensuite, `sudo docker-update update` installe la dernière release (somme SHA256 vérifiée, binaire seul remplacé ; `--check` pour voir sans installer). Chaque fusion sur `main` publie une release.
+Ensuite, `sudo docker-update update` installe la dernière release (somme SHA256 vérifiée, binaire seul remplacé ; `--check` pour voir sans installer). Chaque fusion sur `main` publie une release. Les formats de configuration et d'état sont migrés (`docker-update migrate`, voir la référence).
 
 `init` fait tout, dans l'ordre, en vous demandant avant chaque modification :
 

@@ -2,6 +2,7 @@ package state
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -84,7 +85,7 @@ func TestMissingFileGivesAnEmptyState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "{\n \"advisories\": {},\n \"alerts\": {},\n \"errors\": {},\n \"holds\": [],\n \"images\": {},\n \"releases\": {}\n}"
+	const want = "{\n \"advisories\": {},\n \"alerts\": {},\n \"errors\": {},\n \"holds\": [],\n \"images\": {},\n \"releases\": {},\n \"schema\": 1\n}"
 	if string(data) != want {
 		t.Errorf("JSON d'un état vide :\n%s", data)
 	}
@@ -124,7 +125,9 @@ func TestStateWrittenByPythonLoadsAndIsRewrittenIdentically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != string(want) {
+	// seule différence avec le fichier du Python : la clé « schema » (version du format), ajoutée à la réécriture
+	wantStr := strings.TrimSuffix(string(want), "\n}") + ",\n \"schema\": 1\n}"
+	if string(data) != wantStr {
 		t.Errorf("réécriture différente de celle du Python.\nGo :\n%s\nPython :\n%s", data, want)
 	}
 }
@@ -222,3 +225,48 @@ func TestSaveFailureLeavesNoTemporaryFile(t *testing.T) {
 }
 
 var _ = textutil.Advisory{}
+
+func TestOldStateIsMigratedAndBackedUpOnFirstSave(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "state.json")
+	old := "{\n \"holds\": [\"a\"]\n}"
+	if err := os.WriteFile(p, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(p + ".v0.bak"); err != nil || string(b) != old {
+		t.Fatalf("sauvegarde : %q %v", b, err)
+	}
+	if b, _ := os.ReadFile(p); !strings.Contains(string(b), `"schema": 1`) {
+		t.Fatalf("schema non écrit : %s", b)
+	}
+	// deuxième écriture : plus de sauvegarde, celle d'origine reste intacte
+	s.Holds = append(s.Holds, "b")
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p + ".v0.bak"); string(b) != old {
+		t.Fatal("sauvegarde écrasée")
+	}
+}
+
+func TestStateFromNewerVersionIsRefusedAndUntouched(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "state.json")
+	body := fmt.Sprintf("{\"schema\": %d, \"holds\": []}", CurrentSchema+1)
+	os.WriteFile(p, []byte(body), 0o600)
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "plus récent") {
+		t.Fatalf("err=%v", err)
+	}
+	for _, bad := range []string{`{"schema": "x"}`, `{"schema": -1}`} {
+		os.WriteFile(p, []byte(bad), 0o600)
+		if _, err := Load(p); err == nil {
+			t.Fatalf("%s accepté", bad)
+		}
+	}
+}

@@ -125,6 +125,7 @@ var subcommands = map[string]subSpec{
 	"now":         {names: "+", flags: []string{"--yes"}},
 	"version":     {},
 	"update":      {flags: []string{"--check"}},
+	"migrate":     {flags: []string{"--yes"}},
 	"list":        {},
 	"init":        {flags: []string{"--yes", "--check", "--force", "--skip-checks", "--no-install"}, valued: []string{"--mode", "--include", "--exclude"}},
 	"edit":        {flags: []string{"--yes"}},
@@ -137,7 +138,7 @@ var subcommands = map[string]subSpec{
 			"--release-notes-repos", "--release-notes-ignore", "--smoke-url", "--smoke-expect", "--after"}},
 }
 
-var commandOrder = []string{"validate", "check", "run", "now", "hold", "unhold", "status", "notify-test", "set-webhook", "init", "list", "add", "rename", "edit", "export", "delete", "update", "version"}
+var commandOrder = []string{"validate", "check", "run", "now", "hold", "unhold", "status", "notify-test", "set-webhook", "init", "list", "add", "rename", "edit", "export", "delete", "update", "migrate", "version"}
 
 type subArgs struct {
 	names  []string
@@ -234,6 +235,7 @@ Commandes :
   export              écrit la configuration effective (défauts appliqués) en JSON sur la sortie standard
   delete NOM...       retire des services du fichier (ou --group G) ; ne touche à aucun conteneur ni image
   update [--check]    se met à jour depuis la dernière release GitHub (SHA256SUMS vérifié, remplacement atomique du binaire seul) ; --check : dit seulement s'il y a mieux
+  migrate [--yes]     réécrit la configuration au format de cette version (aperçu, confirmation, sauvegarde) ; l'état se migre seul
   version             affiche la version
 
 Options :

@@ -89,6 +89,7 @@ L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n
 | `notify-test` | envoie un message de test (vérifie le webhook) |
 | `init [--yes] [--check] [--force] [--no-install]` | installe (binaire, dossiers, unités systemd), vérifie, relève les conteneurs Compose qui tournent, crée la configuration et active le minuteur (voir Installation) |
 | `update [--check]` | se met à jour depuis la dernière release GitHub (voir ci-dessous) |
+| `migrate [--yes]` | réécrit la configuration au format de cette version (voir « Migrations ») |
 | `list` | tableau des services configurés : groupe, mode, délai, fenêtre, veille (avis, notes), pause ; lecture seule |
 | `add NOM --compose-dir D --service S [options]` | ajoute **un** service au fichier de configuration (voir ci-dessous) |
 | `rename ANCIEN NOUVEAU [--group]` | renomme un service (ou un groupe avec `--group`) dans le fichier et reporte pauses, erreurs et alertes de l'état sous le nouveau nom |
@@ -106,6 +107,21 @@ version plus ancienne. `--check` (ou `--dry-run`) dit seulement s'il existe mieu
 dernière release. Les passages déjà lancés gardent l'ancien binaire jusqu'à leur fin ; le suivant utilise le nouveau.
 Limite : la somme et les binaires viennent de la même release ; elle protège d'un téléchargement corrompu, pas d'une release
 malveillante (c'est la confiance accordée au dépôt GitHub).
+
+### Migrations après une mise à jour
+
+Le format de la configuration (clé `[settings] config_version`, absente = 0) et celui de l'état (clé `schema`) sont numérotés.
+- **Un fichier plus ancien est lu tel quel** : à chaque lecture, la configuration passe en mémoire par les migrations nécessaires
+  (clé renommée, valeur transformée…), sans rien écrire. Après `update`, le prochain passage continue donc de fonctionner.
+  `validate` signale un ancien format ; `docker-update migrate` réécrit le fichier (aperçu, confirmation, sauvegarde `.bak-DATE`,
+  relecture, retour arrière si invalide), commentaires conservés.
+- **L'état** est migré de la même façon ; à sa première écriture, l'ancien fichier est copié en `state.json.vN.bak`.
+- **Un fichier plus récent que l'outil est refusé** avec un message clair (retour en arrière du binaire) : rien n'est lu de travers
+  ni écrasé. Configuration : code 2 ; état : code 1.
+- Les ajouts de clés optionnelles ne demandent pas de migration (valeur par défaut). Les unités systemd ne sont jamais réécrites par
+  l'outil (elles ont pu être adaptées) : une release qui en change le dira dans ses notes.
+- Pour le développeur : un changement de format ajoute une `Migration` à la fin de `migrations` (`internal/config/migrate.go`,
+  `internal/state/state.go`) avec un test ; ne jamais modifier une migration déjà publiée.
 
 ### Modifier la configuration : `add`, `rename`, `edit` et `delete`
 
