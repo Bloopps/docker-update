@@ -17,7 +17,7 @@ aucun changement de comportement pendant le portage (phases 0 à 6). En cas de d
 | Phase | Contenu | État |
 | --- | --- | --- |
 | 0 | `go.mod`, squelette, CI Go, ce document | fait |
-| 1 | `textutil` : durées, fenêtres, `CleanText`, versions, `split_ref`, motifs de notes, `compact_*` | à faire |
+| 1 | `textutil` : durées, fenêtres, `CleanText`, versions, `split_ref`, motifs de notes, `compact_*` | fait |
 | 2 | `tomlmini` + `config` (clés supprimées, groupes, `examples/`) + fuzz | à faire |
 | 3 | `state`, `notify` (Notifier, Report), `github`, `dockerx` | à faire |
 | 4 | `updater` (evaluate, security, release notes, apply, cleanup, cycle, now, select, status) | à faire |
@@ -29,7 +29,14 @@ Ajustements au plan : aucun pour l'instant. Le fuzz de la CI sera ajouté en pha
 
 ## 3. Écarts connus
 
-Aucun pour l'instant. Les écarts (voulus ou subis) seront consignés ici avec leur justification.
+Écarts de la phase 1 (`internal/textutil`), tous sans effet sur les entrées réelles :
+
+1. **Chiffres ASCII seulement** dans les durées, fenêtres et versions : `\d` de Python accepte aussi les chiffres Unicode (« ٣d »). Go refuse.
+2. **Fin de chaîne stricte** : `^…$` de Python accepte un saut de ligne final (`"v1.0\n"` passe `TAG_RE`) ; en Go `$` est strict. À étendre à `NAME_RE`, `REPO_RE`, `GHSA_RE` en phase 2 (voir Proposition 1).
+3. **Entiers bornés** : `parse_version` accepte des entiers arbitrairement grands en Python ; une version hors de la plage `int` donne « illisible » en Go (on ne devine jamais).
+4. **Dates ISO 8601** : Go lit les formes ISO courantes (`Z`, `+hh:mm`, `+hhmm`, sans fuseau = heure locale, date seule). Python 3.11 en accepte quelques autres (semaines ISO, par exemple), absentes des réponses de GitHub.
+5. **Frontières de mot `\b`** : en RE2 elles sont ASCII ; les motifs de notes de release les reproduisent à la main avec la notion Unicode de Python (`éCVE-2026-12345` ne correspond pas), voir `TestWordBoundariesAreUnicode`.
+6. **Tables Unicode** : `isprintable()` (Python 3.11) et `unicode.IsPrint` (Go 1.27) viennent de versions différentes d'Unicode ; seuls des caractères récents peuvent différer.
 
 ## 4. Inventaire des tests : Python → Go
 
@@ -38,9 +45,9 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 
 | Fichier | Classe | Test Python | Phase | Paquet Go prévu | État |
 | --- | --- | --- | --- | --- | --- |
-| test_docker_update.py | TestHelpers | `test_parse_duration` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestHelpers | `test_split_ref` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestHelpers | `test_windows` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestHelpers | `test_parse_duration` | 1 | internal/textutil : `TestParseDuration (+ TestFmtDuration)` | fait |
+| test_docker_update.py | TestHelpers | `test_split_ref` | 1 | internal/textutil : `TestSplitRef` | fait |
+| test_docker_update.py | TestHelpers | `test_windows` | 1 | internal/textutil : `TestWindows` | fait |
 | test_docker_update.py | TestConfig | `test_valid_and_defaults` | 2 | internal/config | à faire |
 | test_docker_update.py | TestConfig | `test_rejections` | 2 | internal/config | à faire |
 | test_docker_update.py | TestConfig | `test_duplicates_and_groups` | 2 | internal/config | à faire |
@@ -94,12 +101,12 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestSecurityProperties | `test_compose_config_content_is_never_logged` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestSecurityProperties | `test_commands_never_use_a_shell` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestSecurityProperties | `test_pull_is_by_digest_of_the_evaluated_image` | 4 | internal/updater | à faire |
-| test_docker_update.py | TestVersions | `test_parse_version` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestVersions | `test_ranges` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestVersions | `test_unreadable_never_guesses` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestVersions | `test_clean_text` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestVersions | `test_compact_advisory` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestVersions | `test_config_security_keys` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestVersions | `test_parse_version` | 1 | internal/textutil : `TestParseVersion` | fait |
+| test_docker_update.py | TestVersions | `test_ranges` | 1 | internal/textutil : `TestRanges` | fait |
+| test_docker_update.py | TestVersions | `test_unreadable_never_guesses` | 1 | internal/textutil : `TestUnreadableNeverGuesses` | fait |
+| test_docker_update.py | TestVersions | `test_clean_text` | 1 | internal/textutil : `TestCleanText` | fait |
+| test_docker_update.py | TestVersions | `test_compact_advisory` | 1 | internal/textutil : `TestCompactAdvisory` | fait |
+| test_docker_update.py | TestVersions | `test_config_security_keys` | 2 | internal/config | à faire |
 | test_docker_update.py | TestSecurity | `test_fast_track_waits_security_cooldown_then_applies` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestSecurity | `test_clock_starts_at_the_latest_of_first_seen_and_publication` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestSecurity | `test_a_brand_new_advisory_is_not_instant` | 4 | internal/updater | à faire |
@@ -137,16 +144,16 @@ Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici 
 | test_docker_update.py | TestMain | `test_bad_config_exit_code_2` | 5 | internal/cli | à faire |
 | test_docker_update.py | TestMain | `test_lock_prevents_concurrent_runs` | 5 | internal/cli | à faire |
 | test_docker_update.py | TestMain | `test_untrusted_config_refused_as_root` | 5 | internal/cli | à faire |
-| test_docker_update.py | TestReleaseScan | `test_parse_release_version` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestReleaseScan | `test_strong_patterns` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestReleaseScan | `test_near_misses_do_not_match` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestReleaseScan | `test_security_alone_is_weak` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestReleaseScan | `test_hits_are_deduplicated_and_bounded` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestReleaseScan | `test_only_the_head_of_a_huge_note_is_read` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestReleaseScan | `test_compact_release` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestReleaseScan | `test_config_release_keys` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestReleaseScan | `test_example_configs_are_valid` | 1 | internal/textutil | à faire |
-| test_docker_update.py | TestReleaseScan | `test_watchtower_migration_example` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestReleaseScan | `test_parse_release_version` | 1 | internal/textutil : `TestParseReleaseVersion` | fait |
+| test_docker_update.py | TestReleaseScan | `test_strong_patterns` | 1 | internal/textutil : `TestStrongPatterns` | fait |
+| test_docker_update.py | TestReleaseScan | `test_near_misses_do_not_match` | 1 | internal/textutil : `TestNearMissesDoNotMatch (+ TestWordBoundariesAreUnicode)` | fait |
+| test_docker_update.py | TestReleaseScan | `test_security_alone_is_weak` | 1 | internal/textutil : `TestSecurityAloneIsWeak` | fait |
+| test_docker_update.py | TestReleaseScan | `test_hits_are_deduplicated_and_bounded` | 1 | internal/textutil : `TestHitsAreDeduplicatedAndBounded` | fait |
+| test_docker_update.py | TestReleaseScan | `test_only_the_head_of_a_huge_note_is_read` | 1 | internal/textutil : `TestOnlyTheHeadOfAHugeNoteIsRead` | fait |
+| test_docker_update.py | TestReleaseScan | `test_compact_release` | 1 | internal/textutil : `TestCompactRelease` | fait |
+| test_docker_update.py | TestReleaseScan | `test_config_release_keys` | 2 | internal/config | à faire |
+| test_docker_update.py | TestReleaseScan | `test_example_configs_are_valid` | 2 | internal/config | à faire |
+| test_docker_update.py | TestReleaseScan | `test_watchtower_migration_example` | 2 | internal/config | à faire |
 | test_docker_update.py | TestReleaseNotes | `test_real_world_cases` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestReleaseNotes | `test_motifs_are_listed` | 4 | internal/updater | à faire |
 | test_docker_update.py | TestReleaseNotes | `test_no_releases_means_no_alert_and_no_error` | 4 | internal/updater | à faire |
@@ -275,5 +282,15 @@ Total : 232 tests Python distincts.
 
 ## 5. Propositions
 
-Section remise au propriétaire (mission §12). Aucune entrée pour l'instant. Format : *quoi*, *pourquoi*, *effet sur le comportement*,
-*risque*, *effort*, *recommandation*. Rien n'est appliqué sans accord.
+Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *effet sur le comportement*, *risque*, *effort*,
+*recommandation*. Rien n'est appliqué sans accord.
+
+### Proposition 1 : refuser un saut de ligne final dans les noms, dépôts et étiquettes (défaut du Python)
+
+- **Quoi** : `NAME_RE`, `REPO_RE`, `TAG_RE`, `GHSA_RE` et l'expression des CVE se terminent par `$`, qui en Python accepte un `\n` final.
+- **Pourquoi** : `re.match(NAME_RE, "web\n")` réussit (`docker-update.py:58`, `:72`, `:230`). Un nom ou un dépôt avec saut de ligne
+  passerait la validation, puis casserait une clé d'état ou une ligne de journal. Montré par `TestCompactRelease` côté Go (`"v1\n2"` est
+  refusé ; le Python, lui, accepterait `"v1.0\n"`).
+- **Effet sur le comportement** : visible seulement pour une configuration déjà invalide en pratique (refus en plus, message identique).
+- **Risque** : quasi nul. **Effort** : petit.
+- **Recommandation** : faire. État actuel : déjà strict en Go dès la phase 1 (écart n° 2) ; le Python n'est pas corrigé.
