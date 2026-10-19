@@ -87,6 +87,26 @@ L'unité fournie lance `check` (observation) : elle n'applique rien tant qu'on n
 | `status` | état mémorisé |
 | `set-webhook` | enregistre l'URL du webhook Discord (saisie masquée ou entrée standard, fichier `600`, jamais affichée) |
 | `notify-test` | envoie un message de test (vérifie le webhook) |
+| `list` | tableau des services configurés : groupe, mode, délai, fenêtre, veille (avis, notes), pause ; lecture seule |
+| `add NOM --compose-dir D --service S [options]` | ajoute **un** service au fichier de configuration (voir ci-dessous) |
+| `delete NOM… [--group G] [--keep-state]` | retire des services du fichier (voir ci-dessous) |
+
+### Modifier la configuration : `add` et `delete`
+
+Le fichier TOML reste la source de vérité : ces commandes l'éditent **par son texte**, sans toucher à vos commentaires ni à votre
+mise en forme. À chaque écriture : aperçu (diff), confirmation (`--yes` pour passer ; `--dry-run` pour ne rien écrire), sauvegarde de
+l'ancien fichier en `updates.toml.bak-AAAAMMJJ-HHMMSS` (mêmes droits), écriture atomique avec le même propriétaire et les mêmes droits,
+relecture et validation du résultat (l'ancien fichier est remis en place si elle échoue), sous le verrou des passages.
+
+- `add` : options `--compose-file` (répétable), `--mode` (défaut **`notify`**, jamais `auto` sans que vous le disiez), `--cooldown`, `--window`,
+  `--group`, `--advisories dépôt,…`, `--release-notes`, `--release-notes-repos`, `--release-notes-ignore`, `--cleanup=false`, `--smoke-url`,
+  `--smoke-expect`, `--min-severity`, `--security-cooldown`, `--security-policy`, `--health-timeout`. Ce qui manque (dossier compose, service)
+  est demandé sur l'entrée standard. Le nouveau bloc est inséré à la fin, ou après le dernier membre de son groupe (qui lui donne ses
+  réglages communs), ou là où disent `--after SERVICE` / `--first` : dans un groupe, l'ordre du fichier est l'ordre de mise à jour.
+  Refus : nom déjà pris, nom de groupe égal à un nom de service, réglages incompatibles avec ceux du groupe.
+- `delete` retire les blocs désignés avec les commentaires collés au-dessus, et nettoie l'état (pauses, erreurs, alertes de ces services ;
+  `--keep-state` pour ne rien toucher). **Aucun conteneur ni image n'est touché** : le conteneur continue de tourner, hors du suivi.
+- Les fichiers aux fins de ligne Windows (`\r\n`) sont refusés par ces deux commandes (convertir avec `dos2unix`).
 
 Options globales : `--config CHEMIN`, `--dry-run` (aucune commande qui modifie quoi que ce soit, état non écrit).
 

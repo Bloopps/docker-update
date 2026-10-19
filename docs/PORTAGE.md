@@ -23,7 +23,7 @@ aucun changement de comportement pendant le portage (phases 0 à 6). En cas de d
 | 4 | `updater` (evaluate, security, release notes, apply, cleanup, cycle, now, select, status) + `fakeworld` | fait |
 | 5 | `cli` + `main`, parité bout en bout (`DU_BIN`), test différentiel | fait |
 | 6 | Bascule : suppression du Python, faux `docker` en Go (`testdata/fakedocker`) et tests `e2e/`, docs, mutation manuelle | fait, sauf récapitulatif des propositions et vérification §10 |
-| 7 | `init`, `add`, `delete`, `list` | à faire |
+| 7 | `init`, `add`, `delete`, `list` | en cours : `tomledit`, `list`, `add` (options explicites), `delete` faits ; `init`, `add --container` à faire |
 
 Ajustements au plan : aucun pour l'instant. Le fuzz court (10 s) du lecteur TOML est dans la CI depuis la phase 2.
 
@@ -323,6 +323,8 @@ Tests ajoutés par le portage (absents du Python) :
 | --- | --- |
 | `internal/cli` : `TestNotifyTestSendsAMessageAndNeverPrintsTheURL`, `TestValidateAndSetWebhookDoNotTakeTheLock`, `TestSetWebhookReadsOnlyTheFirstLineOfStdin`, `TestStateErrorExitsWith1`, `TestUnknownNameExitsWith1` | codes de sortie, verrou et URL du webhook : propriétés que le Python ne testait que de bout en bout |
 | `internal/cli` : `TestUsageErrors`, `TestOptionPrefixesAndEqualsForm`, `TestHelpAndVersion` | parité d'`argparse` : abréviations uniques, forme `--option=valeur`, options globales avant la commande, code 2 |
+| `internal/tomledit` : `TestInsertThenDeleteRestoresTheFileByteForByte` (propriété d'aller-retour sur un corpus et les `examples/`), `TestDeleteRemovesTheBlockItsGluedCommentsAndOneBlankLine`, `TestRenderedBlockIsCanonicalAndReadsBack`, `TestInsertGoesAfterTheTrailingCommentsOfTheBlock`, `TestExamplesStayValidAfterAnInsert` | phase 7 : édition textuelle non destructive ; mutation : 7 défauts, 7 détectés après ajout d'un test (insertion avant les commentaires de fin de bloc) |
+| `internal/cli` : `TestList`, `TestAdd*`, `TestDelete*`, `TestEditCommandsRefuseWhileAPassIsRunning`, `TestAFileThatFailsToReadBackIsRolledBack`, `TestEditUsageErrors` | phase 7 : `list`, `add`, `delete` (aperçu, confirmation, sauvegarde, droits, retour arrière, verrou, nettoyage de l'état) ; mutation : 14 défauts, 14 détectés après ajout du test de retour arrière |
 | `tests/test_differential.py` (14 scénarios, `DU_BIN`) ; **supprimé avec le Python** (dernier état : commit `50952f1`) | exécute le script Python et le binaire Go sur le même faux Docker et le même faux serveur HTTP, compare codes, sorties, état, requêtes et corps envoyés |
 | `internal/updater` : `TestExtra_HoldOfAGroupPausesEveryMember` | mutation : ignorer la pause d'un groupe (`held`) survivait à toute la suite Python |
 | `internal/updater` : `TestExtra_DryRunNeverWaitsNorProbes` | mutation : en simulation, `up` attendait et sondait quand même |
@@ -347,6 +349,11 @@ d'un test) et 1 équivalent documenté. Rejouer : voir `docs/PORTAGE.md` ci-dess
   `compose`, `regctl` / `buildx`, binaire, dossiers et droits, fichiers du webhook et du jeton, unités systemd et minuteur (mode
   `check` ou `run`), accès au registre et à GitHub ; `init --check` rejoue ces contrôles seuls. Spécifié dans `docs/PROMPT-reecriture-go.md` §9.2
   (étape 0) et annoncé dans la section Installation du README. Non implémenté avant la phase 7 ; `init` ne pose ni le binaire ni les unités.
+
+Écarts de la phase 7 (nouvelles commandes, pas de Python à comparer) :
+27. **`add` et `delete` n'acceptent pas les fichiers aux fins de ligne `\r\n`** (refus explicite) : l'édition textuelle garantit l'aller-retour octet pour octet seulement avec des `\n`.
+28. **Commentaires de fin de bloc** (collés sous la dernière clé, sans ligne vide avant le bloc suivant) : `delete` ne les supprime pas (ils peuvent parler d'autre chose) ; seuls les commentaires collés *au-dessus* de l'en-tête partent avec le bloc.
+29. **`--first`** : l'aller-retour `add --first` puis `delete` est exact si une ligne vide précède le premier bloc (c'est le cas des fichiers écrits par l'outil).
 
 ## 5. Propositions
 

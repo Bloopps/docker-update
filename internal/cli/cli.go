@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Bloopps/docker-update/internal/config"
 	"github.com/Bloopps/docker-update/internal/dockerx"
@@ -41,6 +42,10 @@ type Env struct {
 	IsTerminal func(io.Reader) bool
 	// ReadHidden lit une ligne sans l'afficher (défaut : terminal sans écho).
 	ReadHidden func(prompt string) (string, error)
+	// Load relit la configuration écrite par add / delete (défaut : config.Load).
+	Load func(path string) (*config.Config, error)
+	// Now donne l'heure (nom des sauvegardes) ; défaut : time.Now.
+	Now func() time.Time
 	// NewEngine construit le cœur (défaut : updater.New).
 	NewEngine func(cfg *config.Config, run dockerx.Runner, n *notify.Notifier, st *state.State, log func(string), noSave bool) Engine
 }
@@ -76,6 +81,12 @@ func (e *Env) fill() {
 			}
 			return readHidden(f, e.Stderr, prompt)
 		}
+	}
+	if e.Load == nil {
+		e.Load = config.Load
+	}
+	if e.Now == nil {
+		e.Now = time.Now
 	}
 	if e.NewEngine == nil {
 		e.NewEngine = func(cfg *config.Config, run dockerx.Runner, n *notify.Notifier, st *state.State, log func(string), noSave bool) Engine {
@@ -119,6 +130,9 @@ func Main(args []string, env *Env) int {
 	switch e := err.(type) {
 	case nil:
 		return code
+	case *usageError:
+		fmt.Fprintf(env.Stderr, "docker-update : %v\n(docker-update -h pour l'aide)\n", e)
+		return 2
 	case *config.Error:
 		log("configuration : " + e.Msg)
 		return 2
@@ -146,6 +160,17 @@ func execute(g globals, cmd string, sub subArgs, env *Env, log func(string)) (in
 		return validate(cfg, log), nil
 	case "set-webhook":
 		return 0, setWebhook(cfg, g.dryRun, env, log)
+	case "list":
+		st, err := state.Load(cfg.Settings.StateFile)
+		if err != nil {
+			return 0, err
+		}
+		list(cfg, st, log)
+		return 0, nil
+	case "add":
+		return addCmd(env, g, sub, cfg, log)
+	case "delete":
+		return deleteCmd(env, g, sub, cfg, log)
 	}
 	unlock, err := lock(cfg.Settings.LockFile)
 	if err != nil {

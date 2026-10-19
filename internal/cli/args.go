@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -106,8 +107,10 @@ func parseGlobals(args []string) (g globals, cmd string, rest []string, err erro
 
 // sousCommande décrit les arguments d'une sous-commande.
 type subSpec struct {
-	names string   // "" : aucun nom ; "*" : zéro nom ou plus ; "+" : au moins un
-	flags []string // options longues connues (sans valeur)
+	names   string   // "" : aucun nom ; "*" : zéro nom ou plus ; "+" : au moins un ; "1" : exactement un
+	flags   []string // options longues connues (sans valeur)
+	valued  []string // options longues avec une valeur (--option valeur ou --option=valeur), répétables
+	optBool []string // options booléennes qui acceptent aussi =true / =false (--cleanup, --cleanup=false)
 }
 
 var subcommands = map[string]subSpec{
@@ -121,33 +124,66 @@ var subcommands = map[string]subSpec{
 	"unhold":      {names: "+"},
 	"now":         {names: "+", flags: []string{"--yes"}},
 	"version":     {},
+	"list":        {},
+	"delete":      {names: "*", flags: []string{"--keep-state", "--yes"}, valued: []string{"--group"}},
+	"add": {names: "1", flags: []string{"--release-notes", "--yes", "--first"}, optBool: []string{"--cleanup"},
+		valued: []string{"--compose-dir", "--service", "--compose-file", "--mode", "--cooldown", "--window", "--group",
+			"--advisories", "--min-severity", "--security-cooldown", "--security-policy", "--health-timeout",
+			"--release-notes-repos", "--release-notes-ignore", "--smoke-url", "--smoke-expect", "--after"}},
 }
 
-var commandOrder = []string{"validate", "check", "run", "now", "hold", "unhold", "status", "notify-test", "set-webhook", "version"}
+var commandOrder = []string{"validate", "check", "run", "now", "hold", "unhold", "status", "notify-test", "set-webhook", "list", "add", "delete", "version"}
 
 type subArgs struct {
-	names []string
-	flags map[string]bool
+	names  []string
+	flags  map[string]bool
+	values map[string][]string // options avec valeur, dans l'ordre de la ligne de commande
 }
 
 // parseSub lit les arguments d'une sous-commande. Les options peuvent être mêlées aux noms ; `--` termine les options.
 // Un argument en trop n'est jamais répété dans le message pour `set-webhook` : l'URL du webhook pourrait y figurer.
 func parseSub(cmd string, args []string) (subArgs, error) {
 	spec := subcommands[cmd]
-	out := subArgs{names: []string{}, flags: map[string]bool{}}
+	out := subArgs{names: []string{}, flags: map[string]bool{}, values: map[string][]string{}}
+	known := append(append(append([]string{}, spec.flags...), spec.valued...), spec.optBool...)
 	onlyNames := false
 	var extra int
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
 		case !onlyNames && a == "--":
 			onlyNames = true
 		case !onlyNames && strings.HasPrefix(a, "--"):
-			name, _, hasValue := strings.Cut(a, "=")
-			full, err := matchLong(name, spec.flags)
-			if err != nil || hasValue {
+			name, value, hasValue := strings.Cut(a, "=")
+			full, err := matchLong(name, known)
+			if err != nil {
 				return out, usagef("%s : option inconnue ou invalide", cmd)
 			}
-			out.flags[full] = true
+			switch {
+			case slices.Contains(spec.valued, full):
+				if !hasValue {
+					if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+						return out, usagef("%s : l'option %s attend une valeur", cmd, full)
+					}
+					i++
+					value = args[i]
+				}
+				out.values[full] = append(out.values[full], value)
+			case slices.Contains(spec.optBool, full):
+				switch {
+				case !hasValue || value == "true":
+					out.values[full] = append(out.values[full], "true")
+				case value == "false":
+					out.values[full] = append(out.values[full], "false")
+				default:
+					return out, usagef("%s : %s accepte seulement true ou false", cmd, full)
+				}
+			default:
+				if hasValue {
+					return out, usagef("%s : option inconnue ou invalide", cmd)
+				}
+				out.flags[full] = true
+			}
 		case !onlyNames && strings.HasPrefix(a, "-") && a != "-":
 			return out, usagef("%s : option inconnue ou invalide", cmd)
 		default:
@@ -163,6 +199,9 @@ func parseSub(cmd string, args []string) (subArgs, error) {
 	}
 	if spec.names == "+" && len(out.names) == 0 {
 		return out, usagef("%s : au moins un nom est requis", cmd)
+	}
+	if spec.names == "1" && len(out.names) != 1 {
+		return out, usagef("%s : un seul nom est attendu", cmd)
 	}
 	return out, nil
 }
@@ -182,6 +221,9 @@ Commandes :
   status              affiche l'état mémorisé
   notify-test         envoie un message de test
   set-webhook         enregistre l'URL du webhook (saisie masquée ou entrée standard, jamais en argument)
+  list                tableau des services configurés (lecture seule)
+  add NOM [options]   ajoute un service au fichier de configuration (aperçu, confirmation, sauvegarde, validation)
+  delete NOM...       retire des services du fichier (ou --group G) ; ne touche à aucun conteneur ni image
   version             affiche la version
 
 Options :
