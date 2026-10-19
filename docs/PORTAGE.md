@@ -1,0 +1,279 @@
+# Portage Python → Go : suivi
+
+Mission de référence : `docs/PROMPT-reecriture-go.md`. Le script `docker-update.py` et ses tests sont la spécification exécutable :
+aucun changement de comportement pendant le portage (phases 0 à 6). En cas de doute, **le Python fait foi**.
+
+## 1. Version de Go retenue
+
+- Go n'a pas de version LTS. Le propriétaire a demandé « la dernière LTS » : on retient la **dernière version stable publiée**
+  (go.dev/dl, 19 octobre 2026) : **Go 1.27.2** (la précédente série stable est 1.26.9).
+- Directive de `go.mod` : `go 1.27` (le minimum de la mission est 1.24 ; la CI épingle `1.27.2`). Aucun `require`, ni `go.sum`, ni `vendor/`.
+- Le binaire reste statique : `CGO_ENABLED=0`, `-trimpath`, `linux/amd64` et `linux/arm64`.
+- Installation dans l'environnement de session : archive officielle `go1.27.2.linux-amd64.tar.gz`, empreinte SHA-256 vérifiée
+  (`ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5`).
+
+## 2. Plan par phases
+
+| Phase | Contenu | État |
+| --- | --- | --- |
+| 0 | `go.mod`, squelette, CI Go, ce document | fait |
+| 1 | `textutil` : durées, fenêtres, `CleanText`, versions, `split_ref`, motifs de notes, `compact_*` | à faire |
+| 2 | `tomlmini` + `config` (clés supprimées, groupes, `examples/`) + fuzz | à faire |
+| 3 | `state`, `notify` (Notifier, Report), `github`, `dockerx` | à faire |
+| 4 | `updater` (evaluate, security, release notes, apply, cleanup, cycle, now, select, status) | à faire |
+| 5 | `cli` + `main`, parité bout en bout (`DU_BIN`), test différentiel | à faire |
+| 6 | Bascule : suppression du Python, docs, unité systemd, mutation manuelle | à faire |
+| 7 | `init`, `add`, `delete`, `list` | à faire |
+
+Ajustements au plan : aucun pour l'instant. Le fuzz de la CI sera ajouté en phase 2, avec le premier test de fuzz.
+
+## 3. Écarts connus
+
+Aucun pour l'instant. Les écarts (voulus ou subis) seront consignés ici avec leur justification.
+
+## 4. Inventaire des tests : Python → Go
+
+Un test Python = une ligne. Colonne « Go » : nom prévu (paquet, test ou sous-test) ; l'état passe à « fait » quand le test Go existe et passe.
+Les classes de test héritant de `Base` ou de `E2E` sont comptées une fois ici ; l'héritage multiplie les exécutions (269 au total pour le Python).
+
+| Fichier | Classe | Test Python | Phase | Paquet Go prévu | État |
+| --- | --- | --- | --- | --- | --- |
+| test_docker_update.py | TestHelpers | `test_parse_duration` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestHelpers | `test_split_ref` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestHelpers | `test_windows` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestConfig | `test_valid_and_defaults` | 2 | internal/config | à faire |
+| test_docker_update.py | TestConfig | `test_rejections` | 2 | internal/config | à faire |
+| test_docker_update.py | TestConfig | `test_duplicates_and_groups` | 2 | internal/config | à faire |
+| test_docker_update.py | TestConfig | `test_example_config_is_valid` | 2 | internal/config | à faire |
+| test_docker_update.py | TestConfig | `test_load_config_errors` | 2 | internal/config | à faire |
+| test_docker_update.py | TestConfig | `test_trusted_file` | 2 | internal/config | à faire |
+| test_docker_update.py | TestCycle | `test_up_to_date_does_nothing` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCycle | `test_new_digest_is_deferred_then_applied` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCycle | `test_order_of_operations` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCycle | `test_digest_moving_resets_timer` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCycle | `test_tag_moving_back_clears_state` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCycle | `test_state_persists_between_runs` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCycle | `test_check_never_applies_or_notifies` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestFailures | `test_failed_start_alerts_and_never_rolls_back` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestFailures | `test_failed_digest_is_not_retried_but_new_one_is` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestFailures | `test_restarting_after_up_counts_as_failure` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestFailures | `test_pull_failure_aborts_before_any_change` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestFailures | `test_registry_error_is_reported_once` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestFailures | `test_smoke_test` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestFailures | `test_smoke_test_passes` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestModesAndPolicies | `test_notify_mode_notifies_once_and_never_applies` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestModesAndPolicies | `test_manual_mode_is_silent` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestModesAndPolicies | `test_window` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestModesAndPolicies | `test_global_window_and_override` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestModesAndPolicies | `test_hold` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestModesAndPolicies | `test_hold_survives_restart` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestModesAndPolicies | `test_skips` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestModesAndPolicies | `test_floating_tag_warning` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestModesAndPolicies | `test_regctl_backend` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestModesAndPolicies | `test_bad_manifest_output_is_an_error` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestModesAndPolicies | `test_regctl_bad_output_is_an_error` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestModesAndPolicies | `test_buildx_reads_the_raw_manifest_and_not_a_template` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestGroups | `test_group_updates_in_order_with_single_pull` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestGroups | `test_group_failure_stops_there_and_leaves_everything_as_is` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestGroups | `test_group_stops_at_the_first_failure_and_names_the_untouched` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestGroups | `test_shared_ref_keeps_timer_when_only_one_member_is_up_to_date` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestGroups | `test_now_targets_group_by_name` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestNow | `test_now_bypasses_cooldown_window_and_mode` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestNow | `test_now_unknown_name` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestNow | `test_now_nothing_to_do` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestNow | `test_now_still_retries_a_failed_digest` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestDryRun | `test_dry_run_changes_nothing` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestDryRun | `test_real_runner_dry_run_only_prints` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestInfra | `test_runner` | 3 | internal/state, notify, dockerx | à faire |
+| test_docker_update.py | TestInfra | `test_runner_bytes_keeps_exact_bytes` | 3 | internal/state, notify, dockerx | à faire |
+| test_docker_update.py | TestInfra | `test_state_roundtrip_and_corruption` | 3 | internal/state, notify, dockerx | à faire |
+| test_docker_update.py | TestInfra | `test_notifier_discord_payload_and_secret_never_logged` | 3 | internal/state, notify, dockerx | à faire |
+| test_docker_update.py | TestInfra | `test_notifier_without_url_and_other_formats` | 3 | internal/state, notify, dockerx | à faire |
+| test_docker_update.py | TestInfra | `test_http_status_unreachable` | 3 | internal/state, notify, dockerx | à faire |
+| test_docker_update.py | TestInfra | `test_validate` | 3 | internal/state, notify, dockerx | à faire |
+| test_docker_update.py | TestSecurityProperties | `test_compose_config_content_is_never_logged` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurityProperties | `test_commands_never_use_a_shell` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurityProperties | `test_pull_is_by_digest_of_the_evaluated_image` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestVersions | `test_parse_version` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestVersions | `test_ranges` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestVersions | `test_unreadable_never_guesses` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestVersions | `test_clean_text` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestVersions | `test_compact_advisory` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestVersions | `test_config_security_keys` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestSecurity | `test_fast_track_waits_security_cooldown_then_applies` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_clock_starts_at_the_latest_of_first_seen_and_publication` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_a_brand_new_advisory_is_not_instant` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_candidate_still_vulnerable_keeps_normal_delay` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_candidate_version_unreadable_is_alert_only` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_alert_only_policy` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_severity_and_lookback_filters` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_withdrawn_advisory_is_ignored` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_unaffected_current_version_is_ignored` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_critical_ignores_window_but_high_does_not` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_up_to_date_but_vulnerable_alerts_once` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_unknown_current_version_alerts_once` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_unreadable_range_is_alert_only` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_check_never_pulls_or_notifies` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_dry_run_neither_pulls_nor_persists` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_failed_fast_track_is_not_retried` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_github_outage_does_not_block_normal_updates` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_rate_limit_returns_old_items` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_poll_interval_and_etag` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_token_is_sent_but_never_logged` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_untrusted_summary_cannot_inject` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_old_alerts_are_pruned` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_publication_date_delays_a_late_advisory` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_unreadable_second_range_blocks_acceleration` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_check_reports_detected_version_or_its_absence` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_token_not_logged_when_the_api_fails` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_notify_mode_service_gets_an_alert_not_an_acceleration` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSecurity | `test_group_gets_one_accelerated_update` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestGithubGet | `test_ok_headers_and_etag` | 3 | internal/github | à faire |
+| test_docker_update.py | TestGithubGet | `test_token_and_conditional_request` | 3 | internal/github | à faire |
+| test_docker_update.py | TestGithubGet | `test_errors` | 3 | internal/github | à faire |
+| test_docker_update.py | TestMain | `test_check_and_run_pass_their_names_and_options_on` | 5 | internal/cli | à faire |
+| test_docker_update.py | TestMain | `test_validate_and_status_and_hold` | 5 | internal/cli | à faire |
+| test_docker_update.py | TestMain | `test_notify_test_command` | 5 | internal/cli | à faire |
+| test_docker_update.py | TestMain | `test_bad_config_exit_code_2` | 5 | internal/cli | à faire |
+| test_docker_update.py | TestMain | `test_lock_prevents_concurrent_runs` | 5 | internal/cli | à faire |
+| test_docker_update.py | TestMain | `test_untrusted_config_refused_as_root` | 5 | internal/cli | à faire |
+| test_docker_update.py | TestReleaseScan | `test_parse_release_version` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestReleaseScan | `test_strong_patterns` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestReleaseScan | `test_near_misses_do_not_match` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestReleaseScan | `test_security_alone_is_weak` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestReleaseScan | `test_hits_are_deduplicated_and_bounded` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestReleaseScan | `test_only_the_head_of_a_huge_note_is_read` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestReleaseScan | `test_compact_release` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestReleaseScan | `test_config_release_keys` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestReleaseScan | `test_example_configs_are_valid` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestReleaseScan | `test_watchtower_migration_example` | 1 | internal/textutil | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_real_world_cases` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_motifs_are_listed` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_no_releases_means_no_alert_and_no_error` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_older_or_equal_releases_are_ignored` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_one_alert_per_service_and_tag_and_persisted` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_dedup_key_is_per_service` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_drafts_and_prereleases_are_ignored` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_unreadable_release_tags_are_skipped` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_unreadable_current_version_alerts_once_and_scans_nothing` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_never_accelerates_or_applies` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_ignore_patterns` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_ignore_is_case_insensitive_and_hides_only_matching_hits` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_ignore_can_silence_the_weak_signal_too` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_strong_release_has_no_extra_info_alert` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_weak_signals_are_grouped_and_deduplicated` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_a_release_edited_from_weak_to_strong_is_alerted` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_untrusted_notes_cannot_inject` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_check_logs_but_sends_nothing` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_api_failure_never_blocks_normal_updates` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_rate_limit_waits_the_whole_interval_and_keeps_old_items` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_history_once_then_only_the_latest_releases` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_a_failed_first_read_is_retried_with_the_full_history` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_first_ever_rate_limit_also_waits_the_interval` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_same_tag_in_two_repositories_is_alerted_once` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_404_is_cached_for_the_poll_interval` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_poll_interval_etag_url_and_shared_cache` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_repo_defaults_to_advisories` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_release_notes_are_off_by_default` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_token_is_sent_but_never_logged` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_state_keeps_only_compact_data` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_notify_mode_and_unknown_status_services` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_absent_container_is_skipped` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseNotes | `test_simulation_changes_nothing` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReleaseBodyLimit | `test_releases_endpoint_accepts_large_bodies` | 3 | internal/github | à faire |
+| test_docker_update.py | TestCleanup | `test_previous_image_is_removed_after_a_successful_update` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCleanup | `test_nothing_is_removed_when_the_update_fails` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCleanup | `test_nothing_is_removed_without_an_update` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCleanup | `test_a_refused_removal_does_not_fail_the_update` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCleanup | `test_cleanup_can_be_disabled_globally_and_per_service` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCleanup | `test_default_is_on` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCleanup | `test_group_cleans_each_previous_image_once` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCleanup | `test_dry_run_removes_nothing` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCleanup | `test_now_also_cleans` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestCleanup | `test_option_like_image_id_is_never_passed` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestStoppedContainers | `test_a_stopped_service_is_not_touched_at_all` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestStoppedContainers | `test_notify_manual_and_check_leave_it_alone_too` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestStoppedContainers | `test_now_does_not_start_or_update_a_stopped_service` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestStoppedContainers | `test_restarting_is_not_stopped` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestStoppedContainers | `test_a_started_service_is_picked_up_again` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestStoppedContainers | `test_only_the_stopped_member_of_a_group_is_left_alone` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestStoppedContainers | `test_unreadable_status_is_an_error_and_changes_nothing` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_the_release_that_cites_the_advisory_completes_it_instead_of_a_second_alert` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_cve_and_case_are_matched` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_a_release_with_more_than_the_advisory_still_alerts_for_the_rest` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_weak_signal_in_a_fully_covered_release_is_not_reported` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_an_advisory_the_tool_ignores_does_not_cover_the_release` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_an_advisory_of_another_repository_does_not_cover` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_an_advisory_that_does_not_concern_the_running_version_stays_silent_with_its_release` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_confirmed_fix_alert_carries_the_release_link_and_acceleration_stays_with_the_advisory` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_release_alone_accelerates_nothing_even_when_the_advisory_exists_elsewhere` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_nothing_is_repeated_next_time` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestAdvisoriesAndReleaseNotesTogether | `test_check_logs_both_and_sends_nothing` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReport | `test_empty` | 3 | internal/notify | à faire |
+| test_docker_update.py | TestReport | `test_title_counts_with_plurals` | 3 | internal/notify | à faire |
+| test_docker_update.py | TestReport | `test_level_is_the_worst_one` | 3 | internal/notify | à faire |
+| test_docker_update.py | TestReport | `test_sections_come_in_order_of_importance` | 3 | internal/notify | à faire |
+| test_docker_update.py | TestReport | `test_ready_versions_are_a_table` | 3 | internal/notify | à faire |
+| test_docker_update.py | TestReport | `test_an_item_shows_its_first_lines_only_and_bounded` | 3 | internal/notify | à faire |
+| test_docker_update.py | TestReport | `test_no_mention_and_no_control_characters` | 3 | internal/notify | à faire |
+| test_docker_update.py | TestReport | `test_the_budget_is_respected_and_the_important_part_survives` | 3 | internal/notify | à faire |
+| test_docker_update.py | TestReport | `test_a_huge_table_is_cut_by_rows_not_by_characters` | 3 | internal/notify | à faire |
+| test_docker_update.py | TestReportDelivery | `test_one_message_for_the_whole_pass` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReportDelivery | `test_security_alerts_and_updates_share_the_same_message` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReportDelivery | `test_nothing_new_means_no_message` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReportDelivery | `test_all_up_to_date_means_no_message` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReportDelivery | `test_check_sends_nothing` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReportDelivery | `test_now_sends_its_own_single_report` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReportDelivery | `test_report_level_is_the_worst_event` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReportDelivery | `test_ntfy_and_json_formats_get_the_same_single_report` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReportDelivery | `test_reports_do_not_pile_up_between_passes` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestReportDelivery | `test_notification_failure_does_not_break_the_pass` | 4 | internal/updater | à faire |
+| test_docker_update.py | TestSetWebhook | `test_url_is_written_with_600_and_never_printed` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_the_new_url_is_the_one_used_for_notifications` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_an_existing_file_is_replaced_and_its_rights_fixed` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_invalid_urls_are_refused_without_echoing_them` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_discord_variants_are_accepted` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_only_the_first_line_is_read` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_other_formats_accept_any_http_url` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_a_target_file_is_required` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_dry_run_writes_nothing` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_interactive_input_is_hidden` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_the_url_is_never_a_command_line_argument` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestSetWebhook | `test_removed_keys_are_explained` | 3 et 5 | internal/notify, cli | à faire |
+| test_docker_update.py | TestManualScan | `test_check_on_a_selection_scans_only_those` | 4 et 5 | internal/updater, cli | à faire |
+| test_docker_update.py | TestManualScan | `test_no_name_scans_everything` | 4 et 5 | internal/updater, cli | à faire |
+| test_docker_update.py | TestManualScan | `test_a_group_name_selects_all_its_members` | 4 et 5 | internal/updater, cli | à faire |
+| test_docker_update.py | TestManualScan | `test_several_names_keep_the_file_order_and_unknown_is_refused` | 4 et 5 | internal/updater, cli | à faire |
+| test_docker_update.py | TestManualScan | `test_run_on_a_selection_updates_only_those` | 4 et 5 | internal/updater, cli | à faire |
+| test_docker_update.py | TestManualScan | `test_a_selection_never_erases_what_it_did_not_look_at` | 4 et 5 | internal/updater, cli | à faire |
+| test_docker_update.py | TestManualScan | `test_a_selection_keeps_the_known_errors_of_the_others` | 4 et 5 | internal/updater, cli | à faire |
+| test_docker_update.py | TestManualScan | `test_check_notify_sends_the_state_table_of_the_selection` | 4 et 5 | internal/updater, cli | à faire |
+| test_docker_update.py | TestManualScan | `test_check_without_notify_still_sends_nothing` | 4 et 5 | internal/updater, cli | à faire |
+| test_docker_update.py | TestManualScan | `test_check_notify_without_a_webhook_fails_loudly` | 4 et 5 | internal/updater, cli | à faire |
+| test_docker_update.py | TestManualScan | `test_status_rows` | 4 et 5 | internal/updater, cli | à faire |
+| test_e2e.py | E2E | `test_full_life` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | E2E | `test_old_image_is_removed_after_a_successful_update_only` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | E2E | `test_cleanup_can_be_turned_off` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | E2E | `test_check_and_run_accept_names` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | E2E | `test_stopped_container_is_left_alone` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | E2E | `test_failure_alerts_without_rollback_and_exits_1` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | E2E | `test_hold_then_status` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | E2E | `test_bad_config_and_unknown_name` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | Advisories | `test_confirmed_fix_is_applied_despite_the_long_cooldown` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | Advisories | `test_candidate_still_vulnerable_waits_the_normal_delay` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | Advisories | `test_check_does_not_pull_even_with_an_advisory` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | Advisories | `test_unreachable_api_is_not_fatal` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | ReleaseNotes | `test_alert_is_sent_once_and_nothing_is_applied` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | ReleaseNotes | `test_check_reports_but_sends_nothing` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | ReleaseNotes | `test_missing_repository_and_unreachable_api_are_not_errors` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | ReleaseNotes | `test_unreadable_version_gives_one_alert_and_no_request` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | ReleaseNotes | `test_validate_refuses_unknown_and_incomplete_release_keys` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | OneReport | `test_update_and_release_alert_arrive_in_a_single_post` | 5 | e2e (binaire Go) | à faire |
+| test_e2e.py | SetWebhook | `test_set_webhook_through_stdin` | 5 | e2e (binaire Go) | à faire |
+
+Total : 232 tests Python distincts.
+
+## 5. Propositions
+
+Section remise au propriétaire (mission §12). Aucune entrée pour l'instant. Format : *quoi*, *pourquoi*, *effet sur le comportement*,
+*risque*, *effort*, *recommandation*. Rien n'est appliqué sans accord.

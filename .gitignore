@@ -9,3 +9,6 @@ github_token
 state.json
 config.json
 updates.toml
+# binaires Go
+/docker-update
+/dist/
