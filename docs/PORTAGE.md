@@ -383,3 +383,27 @@ Section remise au propriétaire (mission §12). Format : *quoi*, *pourquoi*, *ef
 - **Effet sur le comportement** : visible seulement après un échec d'envoi : le rapport non remis serait renvoyé au passage suivant (une seule fois par alerte réussie).
 - **Risque** : faible (il faut que `Send` dise s'il a réussi, et ne marquer les clés qu'après). **Effort** : moyen (`Notifier.Send` renvoie un booléen, `flush` valide les clés).
 - **Recommandation** : faire, après la bascule (c'est un changement de comportement ; les mises à jour appliquées ne sont pas concernées, seulement l'information).
+
+### Proposition 4 : publier des versions (binaires et sommes de contrôle) depuis la CI
+- **Quoi** : un workflow déclenché par une étiquette `v*` qui compile amd64 et arm64 et joint les binaires et `SHA256SUMS` à une release GitHub.
+- **Pourquoi** : aujourd'hui aucune version n'existe ; on compile ou on prend l'artefact de la CI (expire). `docker-update version` affiche `dev` hors CI.
+- **Effet sur le comportement** : aucun sur l'outil. **Risque** : faible (permissions `contents: write` pour ce seul workflow). **Effort** : petit.
+- **Recommandation** : faire.
+
+### Proposition 5 : `golangci-lint` en CI
+- **Quoi** : ajouter un lint en plus de `gofmt` et `go vet`. **Pourquoi** : attrape des erreurs ignorées et du code mort que `vet` laisse passer.
+- **Effet** : aucun sur l'outil. **Risque** : outil de développement tiers dans la CI (pas dans le module). **Effort** : petit.
+- **Recommandation** : à discuter (accord demandé par la mission §13).
+
+### Proposition 6 : lecture directe du registre, sans `buildx` ni `regctl`
+- **Quoi** : interroger l'API du registre en Go (requête `HEAD` sur le manifeste) et lire plusieurs images en parallèle.
+- **Pourquoi** : supprime une dépendance d'exécution et accélère les passages de nombreux services.
+- **Effet** : visible seulement en vitesse. **Risque** : moyen à élevé : il faudrait refaire l'authentification (jeton de `DOCKER_CONFIG`, limites Docker Hub), surface de sécurité nouvelle.
+- **Effort** : gros. **Recommandation** : ne pas faire pour l'instant (la parité avec `buildx` / `regctl` est éprouvée).
+
+### Proposition 7 : commandes de configuration supplémentaires (phase 7)
+- **Quoi** : `rename` (renommer un service ou un groupe en gardant état et pauses), `edit` (ouvrir le fichier avec validation avant écriture), export de la configuration, et vérification qu'un dépôt GitHub de `advisories` / `release_notes_repos` existe (`init --check` ou `validate --online`).
+- **Pourquoi** : renommer à la main laisse des entrées orphelines dans l'état ; une faute de frappe sur un dépôt n'est vue qu'au passage suivant (réponse 404 traitée comme vide).
+- **Effet** : nouvelles commandes seulement. **Risque** : faible. **Effort** : moyen.
+- **Recommandation** : `rename` et la vérification des dépôts : faire ; `edit` et l'export : à discuter.
+
