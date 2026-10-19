@@ -12,7 +12,7 @@ Fonctions
   - modes par service : auto (applique après le délai), notify (prévient seulement), manual (ignore) ;
   - groupes (plusieurs services d'une même image, mis à jour ensemble dans l'ordre du fichier) ;
   - fenêtre horaire (ex. 02:00-05:00) : on observe tout le temps, on n'applique que dans la fenêtre ;
-  - test de fumée HTTP après la mise à jour ;
+  - test de fumée HTTP après la mise à jour ; nettoyage de l'image précédente une fois la mise à jour réussie ;
   - retour arrière automatique ou désactivé par service ; pause (hold) ;
   - notifications Discord (ntfy ou JSON possibles), anti-spam des erreurs répétées ;
   - signal de vie (heartbeat) pour détecter un arrêt silencieux de l'outil ;
@@ -297,6 +297,7 @@ class Settings:
     advisory_poll: int = 3600
     advisory_lookback: int = 30 * 86400
     version_label: str = "org.opencontainers.image.version"
+    cleanup: bool = True
 
 
 @dataclass
@@ -317,6 +318,7 @@ class Service:
     min_severity: str = "high"
     security_cooldown: int = 6 * 3600
     security_policy: str = "fast"
+    cleanup: bool = True
     release_notes: bool = False
     release_notes_repos: list[str] = field(default_factory=list)
     release_notes_ignore: list[str] = field(default_factory=list)
@@ -334,10 +336,10 @@ class Config:
 
 _SETTINGS_KEYS = {"state_file", "lock_file", "registry_tool", "notify_url_file", "notify_format",
                   "default_cooldown", "settle_seconds", "health_timeout", "window", "heartbeat_url_file",
-                  "github_api", "github_token_file", "advisory_poll", "advisory_lookback", "version_label"}
+                  "github_api", "github_token_file", "advisory_poll", "advisory_lookback", "version_label", "cleanup"}
 _SERVICE_KEYS = {"name", "compose_dir", "service", "compose_files", "mode", "cooldown", "group",
                  "rollback", "health_timeout", "window", "smoke_url", "smoke_expect",
-                 "advisories", "min_severity", "security_cooldown", "security_policy",
+                 "advisories", "min_severity", "security_cooldown", "security_policy", "cleanup",
                  "release_notes", "release_notes_repos", "release_notes_ignore"}
 
 
@@ -374,6 +376,10 @@ def parse_config(data: dict) -> Config:
         st.advisory_lookback = parse_duration(raw["advisory_lookback"])
     if "default_cooldown" in raw:
         st.default_cooldown = parse_duration(raw["default_cooldown"])
+    if "cleanup" in raw:
+        if not isinstance(raw["cleanup"], bool):
+            raise ConfigError("cleanup doit valoir true ou false")
+        st.cleanup = raw["cleanup"]
     for k in ("settle_seconds", "health_timeout"):
         if k in raw:
             v = raw[k]
@@ -433,6 +439,9 @@ def parse_config(data: dict) -> Config:
         policy = str(s.get("security_policy", "fast"))
         if policy not in POLICIES:
             raise ConfigError(f"{name} : security_policy doit valoir {POLICIES}")
+        cleanup = s.get("cleanup", st.cleanup)
+        if not isinstance(cleanup, bool):
+            raise ConfigError(f"{name} : cleanup doit valoir true ou false")
         rn = s.get("release_notes", False)
         if not isinstance(rn, bool):
             raise ConfigError(f"{name} : release_notes doit valoir true ou false")
@@ -458,7 +467,7 @@ def parse_config(data: dict) -> Config:
             group=group, rollback=bool(s.get("rollback", True)), health_timeout=ht,
             window=parse_window(s["window"] if "window" in s else st.window),
             smoke_url=smoke_url, smoke_expect=list(smoke_expect), advisories=list(advisories),
-            min_severity=min_sev, security_policy=policy, release_notes=rn,
+            min_severity=min_sev, security_policy=policy, cleanup=cleanup, release_notes=rn,
             release_notes_repos=list(rn_repos), release_notes_ignore=list(rn_ignore),
             security_cooldown=parse_duration(s["security_cooldown"]) if "security_cooldown" in s else 6 * 3600))
 
@@ -468,8 +477,8 @@ def parse_config(data: dict) -> Config:
             groups.setdefault(sv.group, []).append(sv)
     for g, members in groups.items():
         if len({(m.mode, m.cooldown, m.rollback, m.window, tuple(m.advisories), m.min_severity,
-                 m.security_cooldown, m.security_policy) for m in members}) > 1:
-            raise ConfigError(f"groupe {g} : mode, cooldown, rollback, window et réglages de sécurité doivent être identiques")
+                 m.security_cooldown, m.security_policy, m.cleanup) for m in members}) > 1:
+            raise ConfigError(f"groupe {g} : mode, cooldown, rollback, window, cleanup et réglages de sécurité doivent être identiques")
         if g in seen:
             raise ConfigError(f"groupe {g} : même nom qu'un service")
     return Config(st, services)
@@ -1165,7 +1174,24 @@ class Updater:
             shorts += f"\nCorrectif de sécurité appliqué : {', '.join(sec)}"
         self.log(f"{unit}: mise à jour réussie ({shorts})")
         self.notifier.send(f"Mise à jour réussie : {unit}", shorts, "ok")
+        self._cleanup(todo, old_ids)
         return True
+
+    def _cleanup(self, todo: list[Eval], old_ids: dict[str, str]) -> None:
+        """Supprime l'image précédente une fois la mise à jour réussie (comme le nettoyage de Watchtower).
+        Jamais forcé : docker refuse si un conteneur utilise encore l'image ou si elle porte un autre nom ;
+        ce n'est alors qu'une ligne de journal. Un échec de nettoyage n'est pas un échec de mise à jour."""
+        for ref, old in old_ids.items():
+            members = [e for e in todo if e.ref == ref]
+            if not old or old.startswith("-") or not all(e.svc.cleanup for e in members):
+                continue
+            r = self.run.run(["docker", "image", "rm", old], mutating=True)
+            if self.run.dry_run:
+                continue
+            if r.rc == 0:
+                self.log(f"  nettoyage : image précédente de {ref} supprimée ({old[7:19] if old.startswith('sha256:') else old})")
+            else:
+                self.log(f"  nettoyage : image précédente de {ref} conservée ({clean_text(r.err, 120)})")
 
     def _fail(self, unit: str, todo: list[Eval], touched: list[Eval], old_ids: dict[str, str],
               targets: dict[str, tuple[str, str, str]]) -> bool:

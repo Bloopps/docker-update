@@ -14,6 +14,7 @@ notify_format     = "discord"
 heartbeat_url_file = "/etc/docker-update/heartbeat_url"    # optionnel (ex. URL « push » d'Uptime Kuma) ; supprimer si inutilisé
 default_cooldown  = "3d"                             # une image doit rester identique ce temps avant d'être appliquée
 window            = "02:00-05:00"                    # on n'applique que la nuit ; "" = à toute heure
+cleanup           = true                             # supprime l'image précédente après une mise à jour RÉUSSIE (jamais forcé) ; par service aussi
 settle_seconds    = 20                               # attente après démarrage avant de juger l'état
 health_timeout    = 180                              # secondes d'attente de la sonde de santé
 
@@ -90,6 +91,7 @@ window = ""
 # ── La tirelire : un groupe (même image), dans l'ordre migrate -> egress -> web -> admin -> sync ──
 # rollback = false : les migrations de la base ne se défont pas. En cas d'échec, l'outil prévient et NE
 # revient PAS en arrière tout seul. L'outil ne sauvegarde rien : la sauvegarde de la base se gère ailleurs.
+# cleanup = false : on garde l'image précédente (seul moyen de revenir en arrière à la main après une migration).
 [[service]]
 name          = "tirelire-migrate"
 group         = "tirelire"
@@ -100,6 +102,7 @@ mode          = "auto"
 cooldown      = "1d"
 window        = ""
 rollback      = false
+cleanup       = false
 
 [[service]]
 name = "tirelire-egress"
@@ -111,6 +114,7 @@ mode = "auto"
 cooldown = "1d"
 window = ""
 rollback = false
+cleanup       = false
 
 [[service]]
 name = "tirelire-web"
@@ -122,6 +126,7 @@ mode = "auto"
 cooldown = "1d"
 window = ""
 rollback = false
+cleanup       = false
 smoke_url = "https://tirelire.EXEMPLE.fr/"
 smoke_expect = [302, 401, 403]
 
@@ -135,6 +140,7 @@ mode = "auto"
 cooldown = "1d"
 window = ""
 rollback = false
+cleanup       = false
 
 [[service]]
 name = "tirelire-sync"
@@ -146,6 +152,7 @@ mode = "auto"
 cooldown = "1d"
 window = ""
 rollback = false
+cleanup       = false
 
 # ── Services « classe root » ou à changements fréquents : l'outil PRÉVIENT, on met à jour à la main ──
 # `docker-update now <nom> --yes` quand vous avez lu les notes de version.

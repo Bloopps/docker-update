@@ -59,6 +59,8 @@ class World:
         self.fail_up: set[str] = set()
         self.restarting: set[str] = set()
         self.fail_pull: set[str] = set()
+        self.removed: list[str] = []
+        self.keep_images: set[str] = set()           # images que docker refuse de supprimer (encore utilisées)
         self.fail_registry: set[str] = set()
         self.dry_run = False
         self.log = lambda m: None
@@ -119,6 +121,11 @@ class World:
             if "State.Status" in argv[3]:
                 return R(0, f"{c['status']}|{c['health']}\n")
             return R(0, c["image_id"] + "\n")
+        if argv[:3] == ["docker", "image", "rm"]:
+            if argv[3] in self.keep_images:
+                return R(1, "", "conflict: unable to delete: image is being used by stopped container")
+            self.removed.append(argv[3])
+            return R(0, f"Deleted: {argv[3]}")
         if argv[:3] == ["docker", "image", "inspect"]:
             if "Config.Labels" in argv[4]:
                 iid = self.by_ref_digest.get(argv[-1], argv[-1])
@@ -1976,6 +1983,108 @@ class TestReleaseBodyLimit(unittest.TestCase):
         self.assertEqual(body[0]["tag_name"], "v1.0.0")
         self.assertEqual(du.github_get(base + "/repos/a/b/security-advisories?per_page=50")[0], 0,
                          "la limite des avis reste de 2 Mio")
+
+
+# ── Nettoyage de l'image précédente ─────────────────────────────────────────
+
+class TestCleanup(Base):
+    def go(self, services=None, **kw):
+        self.traefik()
+        self.new_remote()
+        settings = {"default_cooldown": "0", **kw.pop("settings", {})}
+        return self.make(services or [self.svc(**kw)], settings=settings)
+
+    def test_previous_image_is_removed_after_a_successful_update(self):
+        u = self.go()
+        self.assertEqual(u.cycle(apply=True), 0)
+        self.assertEqual(self.world.removed, ["id-traefik-old"])
+        self.assertIn("nettoyage : image précédente de traefik:v3.6 supprimée", self.logtext())
+        kinds = [c[1] if c[1] != "image" else "rm" for c in self.world.calls
+                 if c[:2] in (["docker", "pull"], ["docker", "tag"]) or c[:3] == ["docker", "image", "rm"]
+                 or (c[:2] == ["docker", "compose"] and "up" in c)]
+        self.assertEqual(kinds[-1], "rm", "le nettoyage vient APRÈS la mise à jour réussie")
+        rm = next(c for c in self.world.calls if c[:3] == ["docker", "image", "rm"])
+        self.assertEqual(rm, ["docker", "image", "rm", "id-traefik-old"], "jamais forcé, jamais de joker")
+
+    def test_nothing_is_removed_when_the_update_fails(self):
+        u = self.go()
+        self.world.fail_up.add("id-" + dg(2)[7:19])
+        self.assertEqual(u.cycle(apply=True), 1)
+        self.assertEqual(self.world.removed, [], "l'image précédente sert au retour arrière")
+        self.assertEqual(self.cmds(["docker", "image", "rm"]), [])
+
+    def test_nothing_is_removed_without_an_update(self):
+        self.traefik()
+        self.make([self.svc()]).cycle(apply=True)
+        self.assertEqual(self.cmds(["docker", "image", "rm"]), [])
+
+    def test_a_refused_removal_does_not_fail_the_update(self):
+        u = self.go()
+        self.world.keep_images.add("id-traefik-old")                # docker refuse : encore utilisée ailleurs
+        self.assertEqual(u.cycle(apply=True), 0)
+        self.assertEqual(self.world.containers[("/stack/traefik", "traefik")]["image_id"], "id-" + dg(2)[7:19])
+        self.assertIn("image précédente de traefik:v3.6 conservée", self.logtext())
+        self.assertIn("stopped container", self.logtext())
+        self.assertNotIn("ÉCHEC", self.posted_all())
+
+    def posted_all(self) -> str:
+        return "\n".join(p[1]["content"] for p in self.posts)
+
+    def test_cleanup_can_be_disabled_globally_and_per_service(self):
+        self.go(settings={"cleanup": False}).cycle(apply=True)
+        self.assertEqual(self.world.removed, [])
+        self.setUp()
+        self.go(cleanup=False).cycle(apply=True)
+        self.assertEqual(self.world.removed, [])
+        self.setUp()
+        self.go(settings={"cleanup": False}, cleanup=True).cycle(apply=True)
+        self.assertEqual(self.world.removed, ["id-traefik-old"], "le réglage du service l'emporte")
+
+    def test_default_is_on(self):
+        one = {"name": "a", "compose_dir": "/x", "service": "a"}
+        self.assertTrue(du.parse_config({"service": [one]}).services[0].cleanup)
+        self.assertFalse(du.parse_config({"settings": {"cleanup": False}, "service": [one]}).services[0].cleanup)
+        for bad in ({"settings": {"cleanup": "oui"}, "service": [one]}, {"service": [dict(one, cleanup="non")]},
+                    {"service": [dict(one, cleanup=0)]}):
+            with self.assertRaises(du.ConfigError, msg=str(bad)):
+                du.parse_config(bad)
+        with self.assertRaises(du.ConfigError):                     # un groupe a un seul réglage
+            du.parse_config({"service": [dict(one, group="g"), dict(one, name="b", group="g", cleanup=False)]})
+
+    def test_group_cleans_each_previous_image_once(self):
+        self.world.add("web", "/stack/app", "web", "ghcr.io/x/app:1", 1)
+        self.world.add("worker", "/stack/app", "worker", "ghcr.io/x/app:1", 1)
+        self.world.add("db", "/stack/app", "db", "ghcr.io/x/db:1", 1)
+        self.world.registry["ghcr.io/x/app:1"] = manifest(2)
+        self.world.registry["ghcr.io/x/db:1"] = manifest(2)
+        svcs = [self.svc(n, "/stack/app", group="g") for n in ("web", "worker", "db")]
+        u = self.make(svcs, settings={"default_cooldown": "0"})
+        self.assertEqual(u.cycle(apply=True), 0)
+        self.assertEqual(sorted(self.world.removed), ["id-db-old", "id-web-old"],
+                         "une image par référence ; web et worker partagent la leur")
+
+    def test_dry_run_removes_nothing(self):
+        self.traefik()
+        self.new_remote()
+        u = self.make([self.svc()], settings={"default_cooldown": "0"}, dry_run=True, persist=False)
+        self.assertEqual(u.cycle(apply=True), 0)
+        self.assertEqual(self.world.removed, [])
+        self.assertNotIn("supprimée", self.logtext())
+
+    def test_now_also_cleans(self):
+        self.traefik()
+        self.new_remote()
+        u = self.make([self.svc(mode="notify")])
+        self.assertEqual(u.now_cmd(["traefik"], yes=True), 0)
+        self.assertEqual(self.world.removed, ["id-traefik-old"])
+
+    def test_option_like_image_id_is_never_passed(self):
+        self.world.add("traefik", "/stack/traefik", "traefik", "traefik:v3.6", 1)
+        self.world.images["--force"] = [f"traefik@{dg(1)}"]
+        self.world.containers[("/stack/traefik", "traefik")]["image_id"] = "--force"
+        self.new_remote()
+        self.make([self.svc()], settings={"default_cooldown": "0"}).cycle(apply=True)
+        self.assertEqual(self.cmds(["docker", "image", "rm"]), [])
 
 
 if __name__ == "__main__":

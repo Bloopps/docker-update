@@ -57,6 +57,11 @@ elif a[:1] == ["pull"]:
     ver = W.get("digest_versions", {}).get(digest)
     if ver:
         W.setdefault("labels", {})[iid] = {"org.opencontainers.image.version": ver}
+elif a[:2] == ["image", "rm"]:
+    assert "-f" not in a and "--force" not in a, "le nettoyage ne force jamais"
+    if any(c["image_id"] == a[2] for c in W["containers"].values()):
+        save(); die("Error: conflict: unable to delete %s: image is being used by running container" % a[2])
+    W.setdefault("removed", []).append(a[2])
 elif a[:1] == ["tag"]:
     W["tags"][a[2]] = W["by"].get(a[1], a[1])
 else:

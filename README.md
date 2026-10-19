@@ -20,6 +20,10 @@ Pensé comme une alternative plus sûre à Watchtower pour un serveur personnel.
   recrée le service avec `docker compose up -d --no-deps --pull never --wait`.
 - **Retour arrière.** Si le service ne repart pas (sonde de santé, état après démarrage, test de fumée HTTP), retour à
   l'image précédente de chaque service, et alerte. Désactivable par service (`rollback = false`) quand une base a migré.
+- **Nettoyage.** Une fois la mise à jour **réussie**, l'image précédente est supprimée (`docker image rm`, comme le
+  nettoyage de Watchtower). Jamais forcé : docker refuse si un conteneur utilise encore l'image ou si elle porte un
+  autre nom, et ce n'est alors qu'une ligne de journal. Rien n'est supprimé après un échec (l'image précédente sert au
+  retour arrière). Réglage `cleanup` (défaut `true`), global ou par service.
 - **Fenêtre horaire** (`02:00-05:00`) : on observe tout le temps, on n'applique que dans la fenêtre. Un avis *critique* l'ignore.
 - **Groupes** : plusieurs services d'une même image mis à jour ensemble, dans l'ordre du fichier.
 - **Modes par service** : `auto` (applique), `notify` (prévient, vous appliquez), `manual` (ignore).
@@ -49,10 +53,10 @@ l'outil **refuse de démarrer** sinon.
 
 **`[settings]`** : `state_file`, `lock_file`, `registry_tool` (`buildx` ou `regctl`), `notify_url_file`, `notify_format`
 (`discord`, `ntfy`, `json`), `heartbeat_url_file`, `default_cooldown`, `window`, `settle_seconds`, `health_timeout`,
-`github_api`, `github_token_file`, `advisory_poll`, `advisory_lookback`, `version_label`.
+`github_api`, `github_token_file`, `advisory_poll`, `advisory_lookback`, `version_label`, `cleanup`.
 
 **`[[service]]`** : `name`, `compose_dir`, `service` (obligatoires) ; `compose_files`, `mode` (défaut `notify`, le plus
-prudent), `cooldown`, `group`, `rollback` (défaut `true`), `health_timeout`, `window`, `smoke_url` +
+prudent), `cooldown`, `group`, `rollback` (défaut `true`), `health_timeout`, `window`, `cleanup`, `smoke_url` +
 `smoke_expect`, `advisories`, `min_severity` (défaut `high`), `security_cooldown` (défaut `6h`), `security_policy`
 (`fast` ou `alert`), `release_notes` (défaut `false`), `release_notes_repos`, `release_notes_ignore`. Les fautes de
 frappe dans les clés sont refusées.
@@ -119,13 +123,15 @@ vôtre (ex. 9.0.1 alors que vous suivez 8.1) est signalée aussi. Une note qui n
 - Un retour arrière **ne défait pas** les migrations de base de données : d'où `rollback = false` pour la tirelire.
 - Le digest comparé est celui de l'index de l'étiquette ; si `check` annonce « nouvelle image » pour **tous** les services
   dès la première fois, c'est que la comparaison ne correspond pas à votre moteur : s'arrêter (voir `docs/AGENT.md`).
+- Le nettoyage ne supprime que l'image remplacée. Une image téléchargée seulement pour lire sa version (veille de
+  sécurité) puis jamais appliquée reste sur le disque : `docker image prune` à la main de temps en temps.
 - La veille de sécurité ne couvre que les projets qui publient leurs avis sur GitHub, et que les images qui portent leur version en étiquette.
 - Docker Hub : lire un manifeste peut compter comme un téléchargement (limites anonymes). `regctl` n'utilise que des requêtes `HEAD`.
 
 ## Tests et qualité
 
 ```sh
-python3 -m unittest discover -s tests -v      # 167 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
+python3 -m unittest discover -s tests -v      # 182 tests : logique, faux monde Docker, bout en bout avec un faux `docker`
 ```
 
 Les tests de bout en bout lancent le **vrai programme** en sous-processus, avec un faux exécutable `docker` placé dans le
@@ -135,6 +141,8 @@ Un **test de mutation** manuel a introduit 38 défauts un par un (délai ignoré
 fenêtre ignorée, jeton journalisé, avis retiré pris en compte, plage illisible comptée comme corrigée…). Les 38 sont
 détectés ; il a aussi révélé trois angles morts des tests, comblés, et un vrai défaut de code (retour arrière de groupe).
 Il n'est pas rejoué par la CI.
+Un troisième, sur le nettoyage des images, a introduit 12 défauts (suppression forcée, après un échec, en simulation,
+réglage par service ignoré…) : les 12 sont détectés.
 Un second test de mutation, sur la veille des notes de release, a introduit 33 défauts (accélération par une note, pré-version
 non ignorée, mot `security` seul pris pour fort, `@everyone` non neutralisé, doublon d'alerte…) : 32 détectés après
 correction de 5 angles morts des tests ; le dernier est équivalent (valeur par défaut jamais lue).

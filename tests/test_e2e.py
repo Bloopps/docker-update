@@ -104,6 +104,22 @@ cooldown = "{cooldown}"
         self.assertIn("à jour", r.stdout)
         self.assertNotIn("hunter2", r.stdout + r.stderr, "le contenu de compose config ne doit jamais sortir")
 
+    def test_old_image_is_removed_after_a_successful_update_only(self):
+        r = self.du("run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.world()["removed"], ["id-old"])
+        self.assertIn("nettoyage : image précédente", r.stdout)
+        self.write_world(remote=3, fail_up=["id-" + dig(3)[7:19]])
+        r = self.du("run")
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("removed", self.world(), "échec + retour arrière : rien n'est supprimé")
+
+    def test_cleanup_can_be_turned_off(self):
+        self.write_cfg("0", "cleanup = false")
+        self.assertEqual(self.du("run").returncode, 0)
+        self.assertEqual(self.image(), "id-" + dig(2)[7:19])
+        self.assertNotIn("removed", self.world())
+
     def test_failure_rolls_back_and_exits_1(self):
         self.write_world(remote=2, fail_up=["id-" + dig(2)[7:19]])
         r = self.du("run")

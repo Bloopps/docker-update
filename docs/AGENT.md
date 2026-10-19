@@ -27,7 +27,7 @@ Condition d'arrêt générale : tout comportement qui ressemble à un danger pou
 | `examples/updates.example.toml` | configuration d'exemple (placeholders à remplacer) |
 | `examples/updates.watchtower.toml` | les applications suivies par Watchtower, toutes en `notify` (placeholders à remplacer) |
 | `deploy/docker-update.service`, `.timer` | unités `systemd` (le service démarre en mode **`check`**, qui n'applique rien) |
-| `tests/` | 167 tests (`python3 -m unittest discover -s tests`) |
+| `tests/` | 182 tests (`python3 -m unittest discover -s tests`) |
 
 Lis d'abord `README.md` (fonctionnement, sous-commandes, modèle de menace, limites connues).
 
@@ -44,7 +44,7 @@ Teste l'outil lui-même sans rien installer, depuis le dépôt cloné :
 ```sh
 python3 -m unittest discover -s tests 2>&1 | tail -5
 ```
-**Attendu : « OK », 167 tests.** Les tests ne créent que des fichiers temporaires et un serveur HTTP local sur `127.0.0.1`.
+**Attendu : « OK », 182 tests.** Les tests ne créent que des fichiers temporaires et un serveur HTTP local sur `127.0.0.1`.
 Si un test échoue, ne continue pas : donne la sortie.
 
 Vérifie que la lecture du digest distant fonctionne **depuis ce serveur** (c'est la commande exacte que l'outil utilise) :
